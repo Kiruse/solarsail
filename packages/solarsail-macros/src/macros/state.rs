@@ -40,3 +40,21 @@ pub fn state(input: &FieldsNamed) -> TokenStream {
 
   TokenStream::from(expanded)
 }
+
+pub fn state_map(input: &crate::parsers::StateMap) -> TokenStream {
+  let name = &input.name;
+  let key_type = &input.key_type;
+  let value_type = &input.value_type;
+
+  // Convert the name to uppercase for the constant name
+  let const_name = syn::Ident::new(
+    &name.to_string().to_uppercase(),
+    name.span(),
+  );
+
+  let expanded = quote! {
+    pub const #const_name: ::cw_storage_plus::Map<#key_type, #value_type> = ::cw_storage_plus::Map::new(stringify!(#name));
+  };
+
+  TokenStream::from(expanded)
+}

@@ -28,15 +28,29 @@ pub mod contract {
     total_supply: Uint128,
   });
 
-  // NEXT:
-  // state_map!(balances   = String => Uint128);
-  // state_map!(allowances = (String, String) => Allowance);
+  state_map!(balances   : String => Uint128);
+  state_map!(allowances : (String, String) => Allowance);
+
+  #[cosmwasm_schema::cw_serde]
+  pub struct Allowance {
+    pub amount: Uint128,
+    pub expiry: Option<Expiry>,
+  }
+
+  #[cosmwasm_schema::cw_serde]
+  pub enum Expiry {
+    Never,
+    AtTimestamp(cosmwasm_std::Uint64),
+    AtBlockHeight(Uint128),
+  }
 
   #[execute]
   #[modulate(minter_only)]
   fn mint(ctx: &ExecuteContext, amount: Uint128, recipient: String) -> ContractResult<Response> {
     // modulate(minter_only) already enforces that the sender is the minter
     let recipient = ctx.deps.api.addr_validate(&recipient)?;
+    let balance = rstate!(balances[recipient.to_string()])?;
+    wstate!(balances[recipient.to_string()], &(balance + amount))?;
     upstate!({ total_supply: old.total_supply + amount })?;
     Ok(Response::new())
   }
