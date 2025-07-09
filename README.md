@@ -32,6 +32,8 @@ pub mod contract {
 
     #[authority]
     marketing: String,
+
+    total_supply: Uint128,
   });
 
   state_map!(balances   = String => Uint128);
