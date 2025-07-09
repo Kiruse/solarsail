@@ -1,54 +1,144 @@
+use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::parse_macro_input;
+use syn::{parse_macro_input, Ident};
+use syn::spanned::Spanned;
 
-use crate::macros::modulator::ItemModulator;
+use crate::macros::{contract::ContractMode, modulator::ItemModulator};
 
 mod macros;
 mod parsers;
 
 #[proc_macro_attribute]
-pub fn contract(_args: TokenStream, input: TokenStream) -> TokenStream {
-  crate::macros::contract::contract(&parse_macro_input!(input as syn::ItemMod)).into()
+pub fn contract(args: TokenStream, input: TokenStream) -> TokenStream {
+  let args = proc_macro2::TokenStream::from(args);
+  let mode = if !args.is_empty() {
+    let span = args.span();
+    match syn::parse2::<Ident>(args) {
+      Ok(ident) => ContractMode::from(ident),
+      Err(_) => {
+        return syn::Error::new(span, "Invalid contract mode").to_compile_error().into();
+      },
+    }
+  } else {
+    ContractMode::Full
+  };
+  crate::macros::contract::contract(mode, &parse_macro_input!(input as syn::ItemMod)).into()
 }
 
 #[proc_macro]
 pub fn state(input: TokenStream) -> TokenStream {
-  crate::macros::state::state(&parse_macro_input!(input as syn::FieldsNamed)).into()
+  crate::macros::state::state(&parse_macro_input!(input as crate::macros::state::StateMacroInput)).into()
+}
+
+/// Define a Map for key-value storage.
+///
+/// ```rust
+/// state_map!(balances = String => Uint128);
+/// state_map!(allowances = (String, String) => Allowance);
+/// ```
+#[proc_macro]
+pub fn state_map(input: TokenStream) -> TokenStream {
+  crate::macros::state::state_map(&parse_macro_input!(input as parsers::StateMap)).into()
 }
 
 /// Read the current state from the storage.
 ///
 /// ```rust
-/// let state = rstate!()?;
+/// let state = retrieve!()?;
 /// ```
 ///
 /// OR
 ///
 /// ```rust
-/// let State { total_supply, .. } = rstate!()?;
+/// let State { total_supply, .. } = retrieve!()?;
+/// ```
+///
+/// OR for map items:
+///
+/// ```rust
+/// let balance = retrieve!(balances[address])?;
 /// ```
 #[proc_macro]
-pub fn rstate(input: TokenStream) -> TokenStream {
-  parse_macro_input!(input as syn::parse::Nothing);
-  quote! {
-    STATE.load(ctx.deps.storage)
-  }.into()
+pub fn retrieve(input: TokenStream) -> TokenStream {
+  let parsed = parse_macro_input!(input as parsers::Retrieve);
+
+  match parsed {
+    // Map item variant
+    parsers::Retrieve::Map { map_name, item_name } => {
+      let const_name = Ident::new(
+        &map_name.to_string().to_case(Case::UpperSnake),
+        map_name.span(),
+      );
+      quote! {
+        #const_name.load(ctx.deps.storage, #item_name)
+      }.into()
+    }
+    parsers::Retrieve::State { store_name } => {
+      let store_name = Ident::new(
+        &store_name.to_string().to_case(Case::UpperSnake),
+        store_name.span(),
+      );
+      quote! {
+        #store_name.load(ctx.deps.storage)
+      }.into()
+    }
+  }
 }
 
 /// Write the new state to the storage. Requires the entire `State` struct.
 ///
 /// ```rust
-/// wstate!({
+/// persist!({
 ///   total_supply: 1000000,
 /// })?;
 /// ```
+///
+/// OR for named stores:
+///
+/// ```rust
+/// persist!(MyStore = new_value)?;
+/// ```
+///
+/// OR for struct construction:
+///
+/// ```rust
+/// persist!(LogoState {
+///   logo: Some(logo),
+/// })?;
+/// ```
+///
+/// OR for map items:
+///
+/// ```rust
+/// persist!(balances[address] = new_balance)?;
+/// ```
 #[proc_macro]
-pub fn wstate(input: TokenStream) -> TokenStream {
-  let expr = parse_macro_input!(input as syn::Expr);
-  quote! {
-    STATE.save(ctx.deps.storage, &#expr)
-  }.into()
+pub fn persist(input: TokenStream) -> TokenStream {
+  let parsed = parse_macro_input!(input as parsers::Persist);
+
+  match parsed {
+    parsers::Persist::Map { map_name, item_name, value } => {
+      // Map item variant
+      let store_name = Ident::new(
+        &map_name.to_string().to_case(Case::UpperSnake),
+        map_name.span(),
+      );
+      quote! {
+        #store_name.save(ctx.deps.storage, #item_name, &#value)
+      }.into()
+    }
+    parsers::Persist::State { store_name, value } |
+    parsers::Persist::StructConstruction { store_name, value } => {
+      let store_name = Ident::new(
+        &store_name.to_string().to_case(Case::UpperSnake),
+        store_name.span(),
+      );
+      quote! {
+        #store_name.save(ctx.deps.storage, &#value)
+      }.into()
+    }
+  }
 }
 
 /// Update the state. Requires a list of key-value pairs, and implicitly receives the `old` state.
@@ -58,36 +148,77 @@ pub fn wstate(input: TokenStream) -> TokenStream {
 ///   total_supply: old.total_supply + amount,
 /// })?;
 /// ```
+///
+/// OR for custom store names:
+///
+/// ```rust
+/// upstate!(TOKEN_INFO: {
+///   total_supply: old.total_supply + amount,
+/// })?;
+/// ```
+///
+/// OR for map items:
+///
+/// ```rust
+/// upstate!(balances[address], {
+///   amount: old.amount + value,
+/// })?;
+/// ```
 #[proc_macro]
 pub fn upstate(input: TokenStream) -> TokenStream {
-  let kvs = parse_macro_input!(input as parsers::KVPairs);
-  let pairs = kvs.pairs.iter().map(|(key, value)| {
-    quote! {
-      #key: #value,
+  let parsed = parse_macro_input!(input as parsers::UpState);
+
+  match parsed {
+    parsers::UpState::Map { map_name, item_name, kvs } => {
+      // Map item variant
+      let const_name = Ident::new(
+        &map_name.to_string().to_uppercase(),
+        map_name.span(),
+      );
+      let pairs = kvs.pairs.iter().map(|(key, value)| {
+        quote! {
+          #key: #value,
+        }
+      }).collect::<Vec<_>>();
+      quote! {
+        #const_name.update(ctx.deps.storage, #item_name, |old| -> Result<_, cosmwasm_std::StdError> {
+          Ok(Item {
+            #(#pairs),*
+            ..old
+          })
+        })
+      }.into()
     }
-  }).collect::<Vec<_>>();
-  quote! {
-    STATE.update(ctx.deps.storage, |old| -> Result<_, cosmwasm_std::StdError> {
-      Ok(State {
-        #(#pairs),*
-        ..old
-      })
-    })
-  }.into()
-}
-
-#[proc_macro_attribute]
-pub fn execute(args: TokenStream, input: TokenStream) -> TokenStream {
-  // Parse args as a list of key = value pairs
-  let args_parsed = parse_macro_input!(args as parsers::AssignPairs);
-  let item = parse_macro_input!(input as syn::ItemFn);
-
-  crate::macros::execute::execute(&item, args_parsed.pairs).into()
+    parsers::UpState::Store { store_name, kvs } => {
+      // Custom store name variant
+      let store_const = Ident::new(
+        &store_name.to_string().to_case(Case::UpperSnake),
+        store_name.span(),
+      );
+      let struct_name = Ident::new(
+        &store_name.to_string().to_case(Case::Pascal),
+        store_name.span(),
+      );
+      let pairs = kvs.pairs.iter().map(|(key, value)| {
+        quote! {
+          #key: #value,
+        }
+      }).collect::<Vec<_>>();
+      quote! {
+        #store_const.update(ctx.deps.storage, |old| -> Result<_, cosmwasm_std::StdError> {
+          Ok(#struct_name {
+            #(#pairs),*
+            ..old
+          })
+        })
+      }.into()
+    }
+  }
 }
 
 #[proc_macro_attribute]
 pub fn modulate(args: TokenStream, input: TokenStream) -> TokenStream {
-  let modulator_ident = parse_macro_input!(args as syn::Ident);
+  let modulator_ident = parse_macro_input!(args as Ident);
   let item = parse_macro_input!(input as syn::ItemFn);
   crate::macros::modulate::modulate(&item, modulator_ident).into()
 }
@@ -96,4 +227,134 @@ pub fn modulate(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn modulator(input: TokenStream) -> TokenStream {
   let item = parse_macro_input!(input as ItemModulator);
   crate::macros::modulator::modulator(&item).into()
+}
+
+/// Assert a condition and return an error if it fails.
+///
+/// ```rust
+/// assert!(amount > 0, ContractError::InvalidAmount { amount })?;
+/// ```
+#[proc_macro]
+pub fn assert(input: TokenStream) -> TokenStream {
+  let parsed = parse_macro_input!(input as parsers::Assert);
+
+  let condition = parsed.condition;
+  let error = parsed.error;
+
+  quote! {
+    if !(#condition) {
+      return Err(#error);
+    }
+  }.into()
+}
+
+/// Invoke a contract with a message. Can only be used within @execute functions.
+/// Creates a SubMsg and adds it to the submsgs vector.
+///
+/// ```rust
+/// invoke!(recipient, msg)?;
+/// ```
+#[proc_macro]
+pub fn invoke(input: TokenStream) -> TokenStream {
+  let input_str = input.to_string();
+  let parts: Vec<&str> = input_str.split(',').collect();
+
+  if parts.len() != 2 {
+    return syn::Error::new(
+      proc_macro2::Span::call_site().into(),
+      "invoke! macro expects exactly 2 arguments: recipient and msg"
+    ).to_compile_error().into();
+  }
+
+  let recipient = parts[0].trim();
+  let msg = parts[1].trim();
+
+  // Parse the recipient and msg as expressions
+  let recipient_expr = syn::parse_str::<syn::Expr>(recipient).unwrap_or_else(|_| {
+    syn::parse_str::<syn::Expr>("recipient").unwrap()
+  });
+
+  let msg_expr = syn::parse_str::<syn::Expr>(msg).unwrap_or_else(|_| {
+    syn::parse_str::<syn::Expr>("msg").unwrap()
+  });
+
+  quote! {
+    {
+      let submsg = cosmwasm_std::SubMsg::new(
+        cosmwasm_std::WasmMsg::Execute {
+          contract_addr: #recipient_expr.to_string(),
+          msg: #msg_expr,
+          funds: vec![],
+        }
+      );
+      __solarsail_submsgs.push(submsg);
+      Ok::<(), cosmwasm_std::StdError>(())
+    }
+  }.into()
+}
+
+/// Enumerate items in a map with optional range and ordering.
+///
+/// ```rust
+/// enumerate!(balances);
+/// enumerate!(balances[user], None..None, descending);
+/// enumerate!(allowances[owner, spender], min..max);
+/// ```
+///
+/// The first expression consists of the map name and optional prefixes. The prefixes are enclosed
+/// in brackets.
+///
+/// `min` and `max` are optional and can be omitted. When present, they are assumed to be `Option`s.
+/// When omitted, they are equivalent to `None`.
+///
+/// `descending` is an optional keyword to sort the items in descending order. When omitted, items
+/// are sorted in ascending order.
+///
+/// The order in which expressions are listed does not matter, except for the map & prefixes.
+#[proc_macro]
+pub fn enumerate(input: TokenStream) -> TokenStream {
+  let parsers::Enumerate {
+    map_name,
+    prefixes,
+    bounds,
+    order,
+  } = parse_macro_input!(input as parsers::Enumerate);
+
+  let const_name = Ident::new(
+    &map_name.to_string().to_case(Case::UpperSnake),
+    map_name.span(),
+  );
+
+  let map_with_prefixes = if prefixes.is_empty() {
+    quote! { #const_name }
+  } else {
+    quote! { #const_name.prefix((#(#prefixes),*)) }
+  };
+
+  // Order type doesn't implement ToTokens, so we just manually wrap it
+  let order = match order {
+    cosmwasm_std::Order::Ascending => quote! { cosmwasm_std::Order::Ascending },
+    cosmwasm_std::Order::Descending => quote! { cosmwasm_std::Order::Descending },
+  };
+
+  let min = match bounds.start {
+    None => quote! { None },
+    Some(start) => quote! { #start.map(|v| ::cw_storage_plus::Bound::inclusive(v)) },
+  };
+
+  let max = match bounds.end {
+    None => quote! { None },
+    Some(end) if bounds.closed => quote! { #end.map(|v| ::cw_storage_plus::Bound::inclusive(v)) },
+    Some(end) => quote! { #end.map(|v| ::cw_storage_plus::Bound::exclusive(v)) },
+  };
+
+  quote! {
+    #map_with_prefixes.range(ctx.deps.storage, #min, #max, #order)
+  }.into()
+}
+
+#[proc_macro]
+pub fn emit(input: TokenStream) -> TokenStream {
+  let parsed = parse_macro_input!(input as parsers::EmitEvent);
+  quote! { #parsed }.into()
 }

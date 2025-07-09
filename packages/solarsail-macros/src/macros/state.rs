@@ -1,42 +1,63 @@
-use proc_macro2::TokenStream;
+use convert_case::{Case, Casing};
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::FieldsNamed;
+use syn::Ident;
 
-pub fn state(input: &FieldsNamed) -> TokenStream {
-  let fields = &input.named;
-  let field_definitions: Vec<_> = fields.iter().map(|field| {
-    let attrs = &field.attrs;
-    let ident = &field.ident;
-    let ty = &field.ty;
+pub type StateMacroInput = crate::parsers::State;
 
-    // Check if this field has the authority attribute
-    let has_authority = attrs.iter().any(|attr| {
-      attr.path().is_ident("authority")
-    });
+pub fn state(input: &StateMacroInput) -> TokenStream {
+  let fields = &input.fields.named;
 
-    if has_authority {
-      // Generate authority field with validation
-      quote! {
-        pub #ident: #ty,
-        // Authority validation will be handled by the contract macro
-      }
-    } else {
+  // `authority` fields have their own `Item`s and are not included in the `State` struct
+  let field_definitions: Vec<_> = fields
+    .iter()
+    .filter(|field| {
+      !field.attrs.iter().any(|attr| attr.path().is_ident("authority"))
+    })
+    .map(|field| {
+      let ident = &field.ident;
+      let ty = &field.ty;
+
       quote! {
         pub #ident: #ty,
       }
-    }
-  }).collect();
+    })
+    .collect();
 
-  let struct_name = syn::Ident::new("State", proc_macro2::Span::call_site());
+  let struct_name = input.identifier.as_ref()
+    .map(|ident| {
+      Ident::new(&ident.to_string().to_case(Case::Pascal), ident.span())
+    })
+    .unwrap_or_else(|| Ident::new("State", Span::call_site()));
 
-  let expanded = quote::quote! {
+  let storage_name = input.identifier.as_ref()
+    .map(|ident| Ident::new(
+      &ident.to_string().to_case(Case::UpperSnake),
+      ident.span()))
+    .unwrap_or_else(|| Ident::new("STATE", Span::call_site()));
+
+  quote! {
     #[cosmwasm_schema::cw_serde]
     pub struct #struct_name {
       #(#field_definitions)*
     }
 
-    pub const STATE: ::cw_storage_plus::Item<#struct_name> = ::cw_storage_plus::Item::new("state");
-  };
+    pub const #storage_name: ::cw_storage_plus::Item<#struct_name> = ::cw_storage_plus::Item::new("state");
+  }
+}
 
-  TokenStream::from(expanded)
+pub fn state_map(input: &crate::parsers::StateMap) -> TokenStream {
+  let name = &input.name;
+  let key_type = &input.key_type;
+  let value_type = &input.value_type;
+
+  // Convert the name to uppercase for the constant name
+  let const_name = Ident::new(
+    &name.to_string().to_uppercase(),
+    name.span(),
+  );
+
+  quote! {
+    pub const #const_name: ::cw_storage_plus::Map<#key_type, #value_type> = ::cw_storage_plus::Map::new(stringify!(#name));
+  }
 }

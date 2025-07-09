@@ -1,98 +1,167 @@
-use proc_macro2::TokenStream;
-use syn::{ItemMod, FnArg, PatType, spanned::Spanned, Type, TypePath, Pat};
-use quote::quote;
+use proc_macro2::{Span, TokenStream};
+use syn::{spanned::Spanned, Ident, Item, ItemMod, Macro};
+use quote::{quote, ToTokens};
 
-pub fn contract(input: &ItemMod) -> TokenStream {
-  let mod_contents = &input.content;
+use crate::macros::utils::has_attr;
 
-  if mod_contents.is_none() {
-    return syn::Error::new(
-      input.span(),
-      "Module must contain at least one item"
-    ).to_compile_error().into();
+#[derive(Debug, Default, PartialEq, Eq, Hash)]
+pub enum ContractMode {
+  #[default]
+  Invalid,
+  Full,
+  Execute,
+  Query,
+}
+
+impl From<Ident> for ContractMode {
+  fn from(ident: Ident) -> Self {
+    match ident.to_string().as_str() {
+      "full" => ContractMode::Full,
+      "execute" => ContractMode::Execute,
+      "query" => ContractMode::Query,
+      _ => ContractMode::Invalid,
+    }
+  }
+}
+
+impl ContractMode {
+  pub fn allows_execute(&self) -> bool {
+    self == &ContractMode::Full || self == &ContractMode::Execute
   }
 
-  let (_, items) = mod_contents.as_ref().unwrap();
+  pub fn allows_query(&self) -> bool {
+    self == &ContractMode::Full || self == &ContractMode::Query
+  }
+}
 
-  // Process items to find functions with authority attributes
-  let mut generated_code = Vec::new();
+pub fn contract(mode: ContractMode, input: &ItemMod) -> TokenStream {
+  match contract_impl(mode, input) {
+    Ok(expanded) => expanded,
+    Err(e) => e.to_compile_error().into(),
+  }
+}
 
-  for item in items {
-    match item {
-      syn::Item::Fn(func) => {
-        // Check if function has authority attribute
-        let has_authority = func.attrs.iter().any(|attr| {
-          attr.path().is_ident("authority")
-        });
+fn contract_impl(mode: ContractMode, input: &ItemMod) -> Result<TokenStream, syn::Error> {
+  let span = Span::mixed_site();
+  let mut input = input.clone();
 
-        if has_authority {
-          // Generate code for authority function
-          let func_name = &func.sig.ident;
-          let func_vis = &func.vis;
-          let func_block = &func.block;
+  if input.content.is_none() {
+    return Err(syn::Error::new(
+      input.span(),
+      "Module must contain at least one item"
+    ));
+  }
 
-          // Extract parameters for authority checking
-          let authority_params: Vec<_> = func.sig.inputs.iter()
-            .filter_map(|arg| {
-              if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-                if let Pat::Ident(pat_ident) = &**pat {
-                  Some((pat_ident.ident.clone(), (**ty).clone()))
-                } else {
-                  None
-                }
-              } else {
-                None
-              }
-            })
-            .collect();
+  let (_, items) = input.content.as_mut().unwrap();
 
-          // Generate authority checking code
-          let authority_checks: Vec<_> = authority_params.iter()
-            .map(|(param_name, param_type)| {
-              if let Type::Path(TypePath { path, .. }) = param_type {
-                if let Some(segment) = path.segments.last() {
-                  if segment.ident == "String" || segment.ident == "Addr" {
-                    quote! {
-                      // Authority check for parameter: #param_name
-                      if #param_name.is_empty() {
-                        return Err(cosmwasm_std::StdError::generic_err("Authority required"));
-                      }
-                    }
-                  } else {
-                    quote! {}
-                  }
-                } else {
-                  quote! {}
-                }
-              } else {
-                quote! {}
-              }
-            })
-            .collect();
+  let authority_code = gen_authority(items)?;
+  let mut has_instantiate = false;
+  let mut has_migrate = false;
+  let mut executors = Vec::new();
+  let mut queriers = Vec::new();
+  let mut errors = Vec::new();
 
-          let generated_func = quote! {
-            #func_vis fn #func_name(mut deps: cosmwasm_std::DepsMut, env: cosmwasm_std::Env, info: cosmwasm_std::MessageInfo, msg: #func_name) -> Result<cosmwasm_std::Response, cosmwasm_std::ContractError> {
-              #(#authority_checks)*
-
-              // Original function logic would go here
-              #func_block
-            }
-          };
-
-          generated_code.push(generated_func);
-        }
+  let mut i = 0usize;
+  while i < items.len() {
+    let sub: Option<TokenStream> = match &items[i] {
+      Item::Fn(func) if func.sig.ident == "instantiate" => {
+        has_instantiate = true;
+        Some(crate::macros::instantiate::transform(span, func)?)
       }
-      _ => {}
+      Item::Fn(func) if func.sig.ident == "migrate" => {
+        has_migrate = true;
+        Some(crate::macros::migrate::transform(span, func)?)
+      }
+      Item::Fn(func) if has_attr(&func.attrs, "execute") => {
+        if !mode.allows_execute() {
+          return Err(syn::Error::new(func.span(), "Execute function not allowed in this contract mode"));
+        }
+        executors.push(func.sig.ident.clone());
+        Some(crate::macros::execute::transform(span, func)?)
+      }
+      Item::Fn(func) if has_attr(&func.attrs, "query") => {
+        if !mode.allows_query() {
+          return Err(syn::Error::new(func.span(), "Query function not allowed in this contract mode"));
+        }
+        queriers.push(func.sig.ident.clone());
+        Some(crate::macros::query::transform(span, func)?)
+      }
+      Item::Macro(mac) if mac.mac.path.is_ident("error") => {
+        let err = syn::parse2::<crate::parsers::ErrorDef>(mac.mac.tokens.clone())?;
+        errors.push(err);
+        Some(quote! {})
+      }
+      _ => None,
+    };
+
+    if let Some(ts) = sub {
+      let mut file = syn::parse2::<syn::File>(ts)?;
+      let count = file.items.len();
+      items.splice(i..=i, file.items.drain(..));
+      i += count;
+    } else {
+      i += 1;
     }
   }
 
-  // Return the original module plus generated code
-  let expanded = quote! {
-    #input
+  // instantiate function assertions
+  if mode == ContractMode::Full && !has_instantiate {
+    return Err(syn::Error::new(span, "Contract is missing an `instantiate` function"));
+  } else if mode != ContractMode::Full && has_instantiate {
+    return Err(syn::Error::new(span, "`instantiate` function must be located in the contract root"));
+  }
 
-    // Generated authority functions
-    #(#generated_code)*
+  // migrate function assertions (optional)
+  if mode != ContractMode::Full && has_migrate {
+    return Err(syn::Error::new(span, "`migrate` function must be located in the contract root"));
+  }
+
+  let error_struct = if mode == ContractMode::Full {
+    Some(crate::macros::error::generate_error_struct(&errors))
+  } else if !errors.is_empty() {
+    return Err(syn::Error::new(span, "`error` macro must be located in the contract root"));
+  } else {
+    None
   };
 
-  TokenStream::from(expanded)
+  let execute_entrypoint = crate::macros::execute::generate_entrypoint(&executors, authority_code.is_some());
+  let query_entrypoint = crate::macros::query::generate_entrypoint(&queriers);
+
+  items.extend(syn::parse2::<syn::File>(quote! {
+    #error_struct
+    #authority_code
+    #execute_entrypoint
+    #query_entrypoint
+  })?.items);
+
+  Ok(input.to_token_stream())
+}
+
+/// Handle authority logic for state! macro calls
+fn gen_authority(items: &mut Vec<Item>) -> Result<Option<TokenStream>, syn::Error> {
+  let mut authority_info = None;
+
+  // find `state!` macro & extract authority fields
+  for item in items.iter() {
+    if let Item::Macro(macro_item) = item {
+      let Macro { path, tokens, .. } = &macro_item.mac;
+      if let Some(segment) = path.segments.last() {
+        if segment.ident == "state" {
+          let parsed = syn::parse2::<crate::macros::state::StateMacroInput>(tokens.clone())?;
+          let fields = parsed.fields.named.into_iter().collect::<Vec<_>>();
+          authority_info = Some(crate::macros::authority::extract_authority_fields(&fields)?);
+          break;
+        }
+      }
+    }
+  }
+
+  if let Some(auth_info) = authority_info {
+    let total_fields = auth_info.authority_fields_required.len() + auth_info.authority_fields_optional.len();
+    if total_fields > 0 {
+      return Ok(Some(crate::macros::authority::generate_authority_code(&auth_info)));
+    }
+  }
+
+  Ok(None)
 }

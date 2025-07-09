@@ -1,92 +1,160 @@
-use crate::macros::utils::{generate_param_extractions, generate_struct_fields, snake_to_pascal};
-use proc_macro2::TokenStream;
+use crate::macros::utils::{extract_msg_params, find_attr, generate_msg_extractions, extract_msg_meta, generate_struct_fields, MsgParams};
+use convert_case::{Case, Casing};
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use std::ops::Deref;
-use syn::{FnArg, ItemFn, PatType, Type, TypePath, Ident, Expr};
+use syn::{Attribute, Ident, ItemFn};
+use syn::spanned::Spanned;
 
-pub fn execute(func: &ItemFn, _args: Vec<(Ident, Expr)>) -> TokenStream {
+pub fn transform(span: Span, func: &ItemFn) -> Result<TokenStream, syn::Error> {
   let func_name = &func.sig.ident;
   let func_vis = &func.vis;
-  let func_block = &func.block;
-  let func_attrs = &func.attrs;
-  let func_result = &func.sig.output;
+  let func_block = func.block.clone();
+  let func_attrs = func.attrs
+    .iter()
+    .filter(|attr| filter_attrs(attr))
+    .collect::<Vec<_>>();
+  let func_return = &func.sig.output;
 
-  // Process execute args
-  // let mut authority: Option<String> = String::new();
-  // for (key, value) in &args {
-  //   match key.to_string().as_str() {
-  //     "authority" => {
-  //       authority = value.to_string();
-  //     }
-  //   }
-  // }
+  let authority_check = match find_attr(&func.attrs, "authority") {
+    Some(attr) => {
+      let auth = attr.parse_args::<Ident>()
+        .map_err(|e| syn::Error::new(attr.span(), format!("Invalid authority attribute: {}", e)))?;
+      let variant = Ident::new(
+        &auth.to_string().to_case(Case::Pascal),
+        auth.span(),
+      );
+      Some(quote! { check_authority(&ctx, Authority::#variant)?; })
+    }
+    None => None,
+  };
 
-  let args_struct_name = syn::Ident::new(
-    &snake_to_pascal(&func_name.to_string()),
-    proc_macro2::Span::call_site(),
+  let msg = Ident::new("msg", span);
+
+  let params = extract_msg_params(&func)?;
+
+  let msg_struct_name = Ident::new(
+    &format!("{}Msg", func_name.to_string().to_case(Case::Pascal)),
+    func.sig.ident.span(),
   );
 
-  // Extract function params, skip self & ctx
-  let params: Vec<_> = func.sig.inputs.iter()
-    .filter(|param| {
-      match param {
-        FnArg::Receiver(_) => false,
-        FnArg::Typed(PatType { ty, .. }) => {
-          // Skip param if type is ExecuteContext or &ExecuteContext
-          match ty.deref() {
-            Type::Path(TypePath { path, .. }) => {
-              if let Some(segment) = path.segments.last() {
-                return segment.ident != "ExecuteContext";
-              }
-            }
-            Type::Reference(syn::TypeReference { elem, .. }) => {
-              if let Type::Path(TypePath { path, .. }) = &**elem {
-                if let Some(segment) = path.segments.last() {
-                  return segment.ident != "ExecuteContext";
-                }
-              }
-            }
-            _ => {}
-          }
-          true
+  let (msg_struct, param_extractions) = match params {
+    MsgParams::Fields(fields) => {
+      let struct_fields = generate_struct_fields(&fields);
+      let param_extractions = generate_msg_extractions(&fields, msg.clone());
+
+      let msg_struct = quote! {
+        #[::cosmwasm_schema::cw_serde]
+        pub struct #msg_struct_name {
+          #(#struct_fields)*
+        }
+      };
+
+      (msg_struct, param_extractions)
+    }
+    MsgParams::Msg(arg) => {
+      let (ty, param_extraction) = extract_msg_meta(msg.clone(), arg)?;
+      (quote! { type #msg_struct_name = #ty; }, vec![param_extraction])
+    }
+  };
+
+  let execute_func_name = Ident::new(
+    &format!("execute_{}", func_name),
+    func.sig.ident.span(),
+  );
+
+  let transformed_func = quote! {
+    #(#func_attrs)*
+    #func_vis fn #execute_func_name(ctx: ::solarsail::ExecuteContext, #msg: #msg_struct_name) #func_return {
+      #authority_check
+      let mut __solarsail_submsgs: Vec<::cosmwasm_std::SubMsg> = Vec::new();
+      let mut __solarsail_events: Vec<::cosmwasm_std::Event> = Vec::new();
+
+      #(#param_extractions)*
+
+      let result: ::std::result::Result<(), _> = #func_block;
+
+      match result {
+        Ok(()) => {
+          Ok(::cosmwasm_std::Response::new().add_submessages(__solarsail_submsgs).add_events(__solarsail_events))
+        }
+        Err(e) => Err(e),
+      }
+    }
+  };
+
+  Ok(quote! {
+    #msg_struct
+    #transformed_func
+  })
+}
+
+pub fn generate_entrypoint(fns: &[Ident], has_authority: bool) -> TokenStream {
+  if fns.is_empty() {
+    return quote! {};
+  }
+
+  let mut variants = fns
+    .iter()
+    .map(|func_name| {
+      let variant = Ident::new(
+        &func_name.to_string().to_case(Case::Pascal),
+        func_name.span(),
+      );
+      let msg_name = Ident::new(
+        &format!("{}Msg", func_name.to_string().to_case(Case::Pascal)),
+        func_name.span(),
+      );
+      quote! { #variant(#msg_name) }
+    })
+    .collect::<Vec<_>>();
+  if has_authority {
+    variants.push(quote! { TransferAuthority(TransferAuthority) });
+  }
+
+  let mut match_arms = fns
+    .iter()
+    .map(|func_name| {
+      let variant = Ident::new(
+        &func_name.to_string().to_case(Case::Pascal),
+        func_name.span(),
+      );
+      let execute_func_name = Ident::new(&format!("execute_{}", func_name), func_name.span());
+      quote! {
+        ExecuteMsg::#variant(msg) => {
+          #execute_func_name(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::generic_err(e.to_string()))
         }
       }
     })
-    .cloned()
-    .collect();
-
-  // Generate struct fields and parameter extractions using utility functions
-  let struct_fields = generate_struct_fields(&params);
-  let param_extractions = generate_param_extractions(&params);
-
-  // Create the execute function name
-  let execute_func_name = syn::Ident::new(
-    &format!("execute_{}", func_name),
-    proc_macro2::Span::call_site(),
-  );
-
-  // Generate the args struct
-  let args_struct = quote! {
-    #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
-    #func_vis struct #args_struct_name {
-      #(#struct_fields)*
-    }
-  };
-
-  // Generate the transformed function
-  let transformed_func = quote! {
-    #(#func_attrs)*
-    #func_vis fn #execute_func_name(ctx: &mut ::solarsail::ExecuteContext, args: #args_struct_name) #func_result {
-      // Extract parameters from args struct
-      #(#param_extractions)*
-
-      // Original function body
-      #func_block
-    }
-  };
+    .collect::<Vec<_>>();
+  if has_authority {
+    match_arms.push(quote! {
+      ExecuteMsg::TransferAuthority(msg) => {
+        execute_transfer_authority(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::generic_err(e.to_string()))
+      }
+    });
+  }
 
   quote! {
-    #args_struct
-    #transformed_func
+    #[::cosmwasm_schema::cw_serde]
+    pub enum ExecuteMsg {
+      #(#variants,)*
+    }
+
+    #[cfg_attr(not(feature = "library"), ::cosmwasm_std::entry_point)]
+    pub fn execute(
+      deps: ::cosmwasm_std::DepsMut,
+      env: ::cosmwasm_std::Env,
+      info: ::cosmwasm_std::MessageInfo,
+      msg: ExecuteMsg,
+    ) -> ::std::result::Result<::cosmwasm_std::Response, ::cosmwasm_std::StdError> {
+      let mut ctx = ::solarsail::ExecuteContext::new(deps, env, info);
+      match msg {
+        #(#match_arms)*
+      }
+    }
   }
+}
+
+fn filter_attrs(attr: &Attribute) -> bool {
+  !attr.path().is_ident("execute") && attr.path().segments.first().unwrap().ident != "authority"
 }

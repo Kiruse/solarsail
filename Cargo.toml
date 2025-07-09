@@ -6,9 +6,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 authors = ["kiruse"]
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 cosmwasm-schema = "1"
