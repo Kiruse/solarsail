@@ -8,6 +8,15 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [features]
+# CosmWasm version features
+cosmwasm_1_1 = ["cosmwasm-std/cosmwasm_1_1"]
+cosmwasm_1_2 = ["cosmwasm-std/cosmwasm_1_2"]
+cosmwasm_1_3 = ["cosmwasm-std/cosmwasm_1_3"]
+cosmwasm_1_4 = ["cosmwasm-std/cosmwasm_1_4"]
+cosmwasm_2_0 = ["cosmwasm-std/cosmwasm_2_0"]
+cosmwasm_2_1 = ["cosmwasm-std/cosmwasm_2_1"]
+cosmwasm_2_2 = ["cosmwasm-std/cosmwasm_2_2"]
+cosmwasm_3_0 = ["cosmwasm-std/cosmwasm_3_0"]
 
 [dependencies]
 cosmwasm-schema.workspace = true

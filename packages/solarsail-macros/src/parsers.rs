@@ -282,7 +282,12 @@ pub struct Enumerate {
   pub map_name: Ident,
   pub prefixes: Vec<Expr>,
   pub bounds: EnumerateBounds,
-  pub order: cosmwasm_std::Order,
+  pub order: Order,
+}
+
+pub enum Order {
+  Ascending,
+  Descending,
 }
 
 #[derive(Default)]
@@ -296,7 +301,7 @@ impl syn::parse::Parse for Enumerate {
   fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
     let map_name: Ident = input.parse()?;
     let mut bounds: EnumerateBounds = Default::default();
-    let mut order = cosmwasm_std::Order::Ascending;
+    let mut order = Order::Ascending;
 
     // optional prefixes in brackets
     let prefixes = if MapIndex::peek(input) {
@@ -315,7 +320,7 @@ impl syn::parse::Parse for Enumerate {
           bounds.closed = matches!(range.limits, syn::RangeLimits::Closed(_));
         }
         Expr::Path(path) if path.path.is_ident("descending") => {
-          order = cosmwasm_std::Order::Descending;
+          order = Order::Descending;
         }
         _ => {
           return Err(syn::Error::new(expr.span(), "Unknown expression"));

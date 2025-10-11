@@ -1,5 +1,3 @@
-pub type ContractResult<T> = std::result::Result<T, contract::ContractError>;
-
 pub mod types;
 
 #[solarsail::contract]

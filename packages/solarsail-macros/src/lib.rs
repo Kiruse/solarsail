@@ -5,6 +5,7 @@ use syn::{parse_macro_input, Ident};
 use syn::spanned::Spanned;
 
 use crate::macros::{contract::ContractMode, modulator::ItemModulator};
+use crate::parsers::Order;
 
 mod macros;
 mod parsers;
@@ -333,8 +334,8 @@ pub fn enumerate(input: TokenStream) -> TokenStream {
 
   // Order type doesn't implement ToTokens, so we just manually wrap it
   let order = match order {
-    cosmwasm_std::Order::Ascending => quote! { cosmwasm_std::Order::Ascending },
-    cosmwasm_std::Order::Descending => quote! { cosmwasm_std::Order::Descending },
+    Order::Ascending => quote! { ::cosmwasm_std::Order::Ascending },
+    Order::Descending => quote! { ::cosmwasm_std::Order::Descending },
   };
 
   let min = match bounds.start {

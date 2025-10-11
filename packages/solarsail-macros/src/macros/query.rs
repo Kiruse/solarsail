@@ -91,7 +91,7 @@ pub fn generate_entrypoint(query_functions: &[Ident]) -> TokenStream {
     quote! {
       QueryMsg::#variant(msg) => {
         let result = #fn_name(ctx, msg)
-          .map_err(|e| ::cosmwasm_std::StdError::generic_err(e.to_string()))?;
+          .map_err(|e| ::cosmwasm_std::StdError::msg(e.to_string()))?;
         ::cosmwasm_std::to_json_binary(&result)
       }
     }

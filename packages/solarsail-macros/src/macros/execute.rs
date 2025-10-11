@@ -121,7 +121,7 @@ pub fn generate_entrypoint(fns: &[Ident], has_authority: bool) -> TokenStream {
       let execute_func_name = Ident::new(&format!("execute_{}", func_name), func_name.span());
       quote! {
         ExecuteMsg::#variant(msg) => {
-          #execute_func_name(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::generic_err(e.to_string()))
+          #execute_func_name(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::msg(e.to_string()))
         }
       }
     })
@@ -129,7 +129,7 @@ pub fn generate_entrypoint(fns: &[Ident], has_authority: bool) -> TokenStream {
   if has_authority {
     match_arms.push(quote! {
       ExecuteMsg::TransferAuthority(msg) => {
-        execute_transfer_authority(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::generic_err(e.to_string()))
+        execute_transfer_authority(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::msg(e.to_string()))
       }
     });
   }
