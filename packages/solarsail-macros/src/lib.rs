@@ -1,4 +1,3 @@
-use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Ident};
@@ -62,29 +61,7 @@ pub fn state_map(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn retrieve(input: TokenStream) -> TokenStream {
-  let parsed = parse_macro_input!(input as parsers::Retrieve);
-
-  match parsed {
-    // Map item variant
-    parsers::Retrieve::Map { map_name, item_name } => {
-      let const_name = Ident::new(
-        &map_name.to_string().to_case(Case::UpperSnake),
-        map_name.span(),
-      );
-      quote! {
-        #const_name.load(ctx.deps.storage, #item_name)
-      }.into()
-    }
-    parsers::Retrieve::State { store_name } => {
-      let store_name = Ident::new(
-        &store_name.to_string().to_case(Case::UpperSnake),
-        store_name.span(),
-      );
-      quote! {
-        #store_name.load(ctx.deps.storage)
-      }.into()
-    }
-  }
+  macros::state::retrieve(&parse_macro_input!(input as parsers::Retrieve)).into()
 }
 
 /// Write the new state to the storage. Requires the entire `State` struct.
@@ -116,30 +93,7 @@ pub fn retrieve(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn persist(input: TokenStream) -> TokenStream {
-  let parsed = parse_macro_input!(input as parsers::Persist);
-
-  match parsed {
-    parsers::Persist::Map { map_name, item_name, value } => {
-      // Map item variant
-      let store_name = Ident::new(
-        &map_name.to_string().to_case(Case::UpperSnake),
-        map_name.span(),
-      );
-      quote! {
-        #store_name.save(ctx.deps.storage, #item_name, &#value)
-      }.into()
-    }
-    parsers::Persist::State { store_name, value } |
-    parsers::Persist::StructConstruction { store_name, value } => {
-      let store_name = Ident::new(
-        &store_name.to_string().to_case(Case::UpperSnake),
-        store_name.span(),
-      );
-      quote! {
-        #store_name.save(ctx.deps.storage, &#value)
-      }.into()
-    }
-  }
+  macros::state::persist(&parse_macro_input!(input as parsers::Persist)).into()
 }
 
 /// Update the state. Requires a list of key-value pairs, and implicitly receives the `old` state.
@@ -167,54 +121,31 @@ pub fn persist(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn upstate(input: TokenStream) -> TokenStream {
-  let parsed = parse_macro_input!(input as parsers::UpState);
+  macros::state::upstate(&parse_macro_input!(input as parsers::UpState)).into()
+}
 
-  match parsed {
-    parsers::UpState::Map { map_name, item_name, kvs } => {
-      // Map item variant
-      let const_name = Ident::new(
-        &map_name.to_string().to_uppercase(),
-        map_name.span(),
-      );
-      let pairs = kvs.pairs.iter().map(|(key, value)| {
-        quote! {
-          #key: #value,
-        }
-      }).collect::<Vec<_>>();
-      quote! {
-        #const_name.update(ctx.deps.storage, #item_name, |old| -> Result<_, cosmwasm_std::StdError> {
-          Ok(Item {
-            #(#pairs),*
-            ..old
-          })
-        })
-      }.into()
-    }
-    parsers::UpState::Store { store_name, kvs } => {
-      // Custom store name variant
-      let store_const = Ident::new(
-        &store_name.to_string().to_case(Case::UpperSnake),
-        store_name.span(),
-      );
-      let struct_name = Ident::new(
-        &store_name.to_string().to_case(Case::Pascal),
-        store_name.span(),
-      );
-      let pairs = kvs.pairs.iter().map(|(key, value)| {
-        quote! {
-          #key: #value,
-        }
-      }).collect::<Vec<_>>();
-      quote! {
-        #store_const.update(ctx.deps.storage, |old| -> Result<_, cosmwasm_std::StdError> {
-          Ok(#struct_name {
-            #(#pairs),*
-            ..old
-          })
-        })
-      }.into()
-    }
-  }
+/// Enumerate items in a map with optional range and ordering.
+///
+/// ```rust
+/// enumerate!(balances);
+/// enumerate!(balances[user], None..None, descending);
+/// enumerate!(allowances[owner, spender], min..max);
+/// enumerate!(tokens.owner[owner], min_token_id..=max_token_id);
+/// ```
+///
+/// The first expression consists of the map name and optional prefixes. The prefixes are enclosed
+/// in brackets.
+///
+/// `min` and `max` are optional and can be omitted. When present, they are assumed to be `Option`s.
+/// When omitted, they are equivalent to `None`.
+///
+/// `descending` is an optional keyword to sort the items in descending order. When omitted, items
+/// are sorted in ascending order.
+///
+/// The order in which expressions are listed does not matter, except for the map & prefixes.
+#[proc_macro]
+pub fn enumerate(input: TokenStream) -> TokenStream {
+  macros::state::enumerate(&parse_macro_input!(input as parsers::Enumerate)).into()
 }
 
 #[proc_macro_attribute]
@@ -291,66 +222,6 @@ pub fn invoke(input: TokenStream) -> TokenStream {
       __solarsail_submsgs.push(submsg);
       Ok::<(), cosmwasm_std::StdError>(())
     }
-  }.into()
-}
-
-/// Enumerate items in a map with optional range and ordering.
-///
-/// ```rust
-/// enumerate!(balances);
-/// enumerate!(balances[user], None..None, descending);
-/// enumerate!(allowances[owner, spender], min..max);
-/// ```
-///
-/// The first expression consists of the map name and optional prefixes. The prefixes are enclosed
-/// in brackets.
-///
-/// `min` and `max` are optional and can be omitted. When present, they are assumed to be `Option`s.
-/// When omitted, they are equivalent to `None`.
-///
-/// `descending` is an optional keyword to sort the items in descending order. When omitted, items
-/// are sorted in ascending order.
-///
-/// The order in which expressions are listed does not matter, except for the map & prefixes.
-#[proc_macro]
-pub fn enumerate(input: TokenStream) -> TokenStream {
-  let parsers::Enumerate {
-    map_name,
-    prefixes,
-    bounds,
-    order,
-  } = parse_macro_input!(input as parsers::Enumerate);
-
-  let const_name = Ident::new(
-    &map_name.to_string().to_case(Case::UpperSnake),
-    map_name.span(),
-  );
-
-  let map_with_prefixes = if prefixes.is_empty() {
-    quote! { #const_name }
-  } else {
-    quote! { #const_name.prefix((#(#prefixes),*)) }
-  };
-
-  // Order type doesn't implement ToTokens, so we just manually wrap it
-  let order = match order {
-    Order::Ascending => quote! { ::cosmwasm_std::Order::Ascending },
-    Order::Descending => quote! { ::cosmwasm_std::Order::Descending },
-  };
-
-  let min = match bounds.start {
-    None => quote! { None },
-    Some(start) => quote! { #start.map(|v| ::cw_storage_plus::Bound::inclusive(v)) },
-  };
-
-  let max = match bounds.end {
-    None => quote! { None },
-    Some(end) if bounds.closed => quote! { #end.map(|v| ::cw_storage_plus::Bound::inclusive(v)) },
-    Some(end) => quote! { #end.map(|v| ::cw_storage_plus::Bound::exclusive(v)) },
-  };
-
-  quote! {
-    #map_with_prefixes.range(ctx.deps.storage, #min, #max, #order)
   }.into()
 }
 

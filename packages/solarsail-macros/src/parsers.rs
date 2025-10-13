@@ -44,15 +44,19 @@ impl syn::parse::Parse for KVPairs {
 
     while !content.is_empty() {
       let key: Ident = content.parse()?;
-      content.parse::<syn::Token![:]>()?;
-      let value: Expr = content.parse()?;
+
+      let value = if content.peek(syn::Token![:]) {
+        content.parse::<syn::Token![:]>()?;
+        content.parse::<Expr>()?
+      } else {
+        syn::parse2::<Expr>(quote! { #key })?
+      };
 
       pairs.push((key, value));
 
-      if content.is_empty() {
-        break;
+      if !content.is_empty() {
+        content.parse::<syn::Token![,]>()?;
       }
-      content.parse::<syn::Token![,]>()?;
     }
 
     Ok(KVPairs { pairs })
@@ -64,6 +68,7 @@ pub struct StateMap {
   pub name: Ident,
   pub key_type: syn::Type,
   pub value_type: syn::Type,
+  pub indexes: Vec<StateMapIndex>,
 }
 
 impl syn::parse::Parse for StateMap {
@@ -74,11 +79,48 @@ impl syn::parse::Parse for StateMap {
     input.parse::<syn::Token![=>]>()?;
     let value_type: syn::Type = input.parse()?;
 
+    let mut indexes = Vec::new();
+
+    if input.peek(syn::Token![,]) {
+      input.parse::<syn::Token![,]>()?;
+      let content;
+      syn::bracketed!(content in input);
+      while !content.is_empty() {
+        let index: StateMapIndex = content.parse()?;
+        indexes.push(index);
+        if !content.is_empty() {
+          content.parse::<syn::Token![,]>()?;
+        }
+      }
+    }
+
     Ok(StateMap {
       name,
       key_type,
       value_type,
+      indexes,
     })
+  }
+}
+
+pub struct StateMapIndex {
+  pub field: Ident,
+  pub ty: syn::Type,
+  pub unique: bool,
+}
+
+impl syn::parse::Parse for StateMapIndex {
+  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    let field: Ident = input.parse()?;
+    input.parse::<syn::Token![:]>()?;
+    let ty: syn::Type = input.parse()?;
+    let unique = if input.peek(syn::Token![!]) {
+      input.parse::<syn::Token![!]>()?;
+      true
+    } else {
+      false
+    };
+    Ok(StateMapIndex { field, ty, unique })
   }
 }
 
@@ -283,6 +325,7 @@ pub struct Enumerate {
   pub prefixes: Vec<Expr>,
   pub bounds: EnumerateBounds,
   pub order: Order,
+  pub idx: Option<Ident>,
 }
 
 pub enum Order {
@@ -302,6 +345,13 @@ impl syn::parse::Parse for Enumerate {
     let map_name: Ident = input.parse()?;
     let mut bounds: EnumerateBounds = Default::default();
     let mut order = Order::Ascending;
+    let mut index_field = None;
+
+    // Check for index field syntax (map_name.index_field)
+    if input.peek(syn::Token![.]) {
+      input.parse::<syn::Token![.]>()?;
+      index_field = Some(input.parse()?);
+    }
 
     // optional prefixes in brackets
     let prefixes = if MapIndex::peek(input) {
@@ -333,6 +383,7 @@ impl syn::parse::Parse for Enumerate {
       prefixes,
       bounds,
       order,
+      idx: index_field,
     })
   }
 }

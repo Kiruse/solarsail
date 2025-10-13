@@ -15,6 +15,7 @@ edition = "2024"
 cosmwasm-schema = { version = "3", default-features = false }
 cosmwasm-std = { version = "3", default-features = false }
 cw-storage-plus = { version = "3", default-features = false }
+cw-utils = { version = "3", default-features = false }
 cw2 = { version = "3", default-features = false }
 
 # Common dependencies
