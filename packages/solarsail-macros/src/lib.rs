@@ -148,6 +148,18 @@ pub fn enumerate(input: TokenStream) -> TokenStream {
   macros::state::enumerate(&parse_macro_input!(input as parsers::Enumerate)).into()
 }
 
+/// Delete a storage item from a map, or an entire store.
+///
+/// ```rust
+/// delete!(named_store);
+/// delete!(balances[address]);
+/// delete!(operators[(owner, operator)]);
+/// ```
+#[proc_macro]
+pub fn delete(input: TokenStream) -> TokenStream {
+  macros::state::delete(&parse_macro_input!(input as parsers::Delete)).into()
+}
+
 #[proc_macro_attribute]
 pub fn modulate(args: TokenStream, input: TokenStream) -> TokenStream {
   let modulator_ident = parse_macro_input!(args as Ident);

@@ -277,6 +277,41 @@ impl syn::parse::Parse for UpState {
   }
 }
 
+/// Custom parser for enumerate macro (MapName[prefixes...], min..max, descending)
+pub struct Enumerate {
+  pub map_name: Ident,
+  pub prefixes: Vec<Expr>,
+  pub bounds: EnumerateBounds,
+  pub order: Order,
+  pub idx: Option<Ident>,
+}
+
+/// Custom parser for delete macro (MapName[item_name]), (StoreName)
+pub enum Delete {
+  Map {
+    map_name: Ident,
+    item_name: Expr,
+  },
+  Store {
+    store_name: Ident,
+  },
+}
+
+impl syn::parse::Parse for Delete {
+  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    let store_name: Ident = input.parse()?;
+    if input.peek(syn::token::Bracket) {
+      let content;
+      syn::bracketed!(content in input);
+      let item_name: Expr = content.parse()?;
+      Ok(Delete::Map { map_name: store_name, item_name })
+    } else {
+      Ok(Delete::Store { store_name })
+    }
+  }
+}
+
+
 /// Custom parser for state macro (optional identifier, fields)
 pub struct State {
   pub identifier: Option<Ident>,
@@ -317,15 +352,6 @@ impl syn::parse::Parse for Assert {
 
     Ok(Assert { condition, error })
   }
-}
-
-/// Custom parser for enumerate macro (MapName[prefixes...], min..max, descending)
-pub struct Enumerate {
-  pub map_name: Ident,
-  pub prefixes: Vec<Expr>,
-  pub bounds: EnumerateBounds,
-  pub order: Order,
-  pub idx: Option<Ident>,
 }
 
 pub enum Order {

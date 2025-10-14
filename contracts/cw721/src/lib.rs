@@ -8,6 +8,7 @@ pub mod types;
 #[solarsail::contract]
 pub mod contract {
   use cosmwasm_std::Addr;
+  use cw_utils::Expiration;
   use solarsail::*;
 
   use crate::types::*;
@@ -28,6 +29,9 @@ pub mod contract {
   });
 
   state_map!(tokens: String => Token, [owner: Addr]);
+  state_map!(operators: (Addr, Addr) => Expiration);
+
+  error!(NotFound);
 
   pub fn instantiate(
     ctx: ExecuteContext,
@@ -45,7 +49,6 @@ pub mod contract {
   #[contract(execute)]
   pub mod execute {
     use cosmwasm_std::{Binary, to_json_binary};
-    use cw_utils::Expiration;
 
     use super::*;
 
@@ -111,12 +114,7 @@ pub mod contract {
     #[execute]
     pub fn approve_all(ctx: ExecuteContext, operator: Addr, _expires: Option<Expiration>) -> ContractResult<ContractError> {
       let owner = &ctx.info.sender;
-      let tokens = enumerate!(tokens.owner[owner.clone()])
-        .collect::<Result<Vec<_>, _>>()?;
-      for (token_id, mut token) in tokens {
-        token.approve(&ctx, operator.clone(), _expires)?;
-        persist!(tokens[token_id.clone()] = token)?;
-      }
+      persist!(operators[(owner.clone(), operator.clone())] = _expires.unwrap_or(Expiration::Never {}))?;
       emit!("approve.all", { owner, operator });
       Ok(())
     }
@@ -134,12 +132,7 @@ pub mod contract {
     #[execute]
     pub fn revoke_all(ctx: ExecuteContext, operator: Addr) -> ContractResult<ContractError> {
       let owner = &ctx.info.sender;
-      let tokens = enumerate!(tokens.owner[owner.clone()])
-        .collect::<Result<Vec<_>, _>>()?;
-      for (token_id, mut token) in tokens {
-        token.revoke_approval(&ctx, operator.clone())?;
-        persist!(tokens[token_id.clone()] = token)?;
-      }
+      delete!(operators[(owner.clone(), operator.clone())]);
       emit!("revoke.all", { owner, operator });
       Ok(())
     }
@@ -171,6 +164,98 @@ pub mod contract {
       upstate!({ total_supply: old.total_supply - 1 })?;
       emit!("burn", { token_id });
       Ok(())
+    }
+  }
+
+  #[contract(query)]
+  pub mod query {
+    use cosmwasm_schema::cw_serde;
+
+    use crate::types::Approval;
+
+    use super::*;
+
+    #[cw_serde]
+    pub struct OwnerOfResponse {
+      pub owner: Addr,
+      pub approvals: Vec<Approval>,
+    }
+
+    #[query]
+    pub fn owner_of(ctx: QueryContext, token_id: String) -> Result<OwnerOfResponse, ContractError> {
+      let token = retrieve!(tokens[token_id.clone()])?;
+      Ok(OwnerOfResponse {
+        owner: token.owner,
+        approvals: token.approvals,
+      })
+    }
+
+    #[cw_serde]
+    pub struct ApprovalResponse {
+      pub approval: Approval,
+    }
+
+    #[query]
+    pub fn approval(ctx: QueryContext, token_id: String, spender: Addr, include_expired: Option<bool>) -> Result<ApprovalResponse, ContractError> {
+      let token = retrieve!(tokens[token_id.clone()])?;
+
+      // NFT owner always has approval
+      if spender == token.owner {
+        return Ok(ApprovalResponse {
+          approval: Approval {
+            spender,
+            expires: Expiration::Never {},
+          },
+        });
+      }
+
+      // Explicit approval
+      let approval = token.approvals
+        .iter()
+        .filter(|a| a.spender == spender)
+        .filter(|a| include_expired.unwrap_or(false) || !a.expires.is_expired(&ctx.env.block))
+        .next();
+      if let Some(approval) = approval {
+        return Ok(ApprovalResponse {
+          approval: approval.clone(),
+        });
+      }
+
+      // Implicit approval via token owner's operators
+      let expires = retrieve!(operators[(token.owner, spender.clone())])
+        .map_err(|_| ContractError::NotFound)
+        .and_then(|x| if x.is_expired(&ctx.env.block) { Err(ContractError::NotFound) } else { Ok(x) })?;
+      Ok(ApprovalResponse {
+        approval: Approval {
+          spender,
+          expires,
+        },
+      })
+    }
+
+    #[cw_serde]
+    pub struct ApprovalsResponse {
+      pub approvals: Vec<Approval>,
+    }
+
+    #[query]
+    fn approvals(ctx: QueryContext, token_id: String, include_expired: Option<bool>) -> Result<ApprovalsResponse, ContractError> {
+      let token = retrieve!(tokens[token_id.clone()])?;
+      let explicit = token.approvals
+        .iter()
+        .filter(|a| include_expired.unwrap_or(false) || !a.expires.is_expired(&ctx.env.block))
+        .cloned();
+      let implicit = enumerate!(operators[token.owner])
+        .filter(|op| op.is_ok())
+        .map(|op| op.unwrap())
+        .filter(|(_, expires)| include_expired.unwrap_or(false) || !expires.is_expired(&ctx.env.block))
+        .map(|(spender, expires)| Approval {
+          spender,
+          expires,
+        });
+      Ok(ApprovalsResponse {
+        approvals: explicit.chain(implicit).collect(),
+      })
     }
   }
 }

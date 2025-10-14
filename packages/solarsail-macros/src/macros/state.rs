@@ -4,7 +4,7 @@ use quote::quote;
 use syn::Ident;
 
 use crate::Order;
-use crate::parsers::{Enumerate, Persist, Retrieve, State, StateMap, StateMapIndex, UpState};
+use crate::parsers::{Delete, Enumerate, Persist, Retrieve, State, StateMap, StateMapIndex, UpState};
 
 pub type StateMacroInput = State;
 
@@ -269,6 +269,19 @@ pub fn enumerate(input: &Enumerate) -> TokenStream {
 
   quote! {
     #res.range(ctx.deps.storage, #min, #max, #order)
+  }
+}
+
+pub fn delete(input: &Delete) -> TokenStream {
+  match input {
+    Delete::Map { map_name, item_name } => {
+      let store_name = storage_name(map_name);
+      quote! { #store_name().remove(ctx.deps.storage, #item_name) }.into()
+    }
+    Delete::Store { store_name } => {
+      let store_name = storage_name(store_name);
+      quote! { #store_name().remove(ctx.deps.storage) }.into()
+    }
   }
 }
 
