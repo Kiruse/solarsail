@@ -62,7 +62,8 @@ pub mod contract {
 
   #[contract(execute)]
   pub mod execute {
-    use cosmwasm_std::Binary;
+    use cosmwasm_std::{Binary, to_json_binary};
+    use solarsail::authority::Expiration;
 
     use super::*;
 
@@ -91,7 +92,12 @@ pub mod contract {
       let recipient_balance = retrieve!(balances[recipient.clone()])?;
       persist!(balances[recipient.clone()] = &(recipient_balance + amount))?;
 
-      invoke!(recipient, msg)?;
+      let msg = to_json_binary(&Cw20ReceiverExecuteMsg::Receive(Cw20ReceiveMsg {
+        sender: ctx.info.sender.clone(),
+        amount: amount.clone(),
+        msg,
+      }))?;
+      invoke!(recipient, msg);
       emit!("send", { recipient, amount });
       Ok(())
     }
@@ -168,30 +174,32 @@ pub mod contract {
       let balance = retrieve!(balances[recipient.clone()])?;
       persist!(balances[recipient.clone()] = &(balance.checked_add(amount)?))?;
 
-      invoke!(recipient, msg)?;
+      invoke!(recipient, msg);
       emit!("send_from", { sender, recipient, amount });
       Ok(())
     }
 
     #[execute]
     // no need for #[authority(minter)] here because the `execute_transfer_authority` already enforces it
-    fn update_minter(ctx: ExecuteContext, minter: Option<String>) -> ContractResult<ContractError> {
-      execute_transfer_authority(ctx, TransferAuthority::Minter(minter.clone()))?;
-      match minter {
-        Some(minter) => emit!("authority.transfer", { which: "minter", minter }),
-        None => emit!("authority.renounce", { which: "minter" }),
-      }
+    fn update_minter(ctx: ExecuteContext, minter: Option<Addr>, expires: Option<Expiration>) -> ContractResult<ContractError> {
+      let expires = expires.unwrap_or(Expiration::Never {});
+      let auth = AuthorityTransfer::Minter {
+        addr: minter.clone(),
+        expires,
+      };
+      auth.transfer(&mut ctx)?;
       Ok(())
     }
 
     #[execute]
     // no need for #[authority(marketing)] here because the `execute_transfer_authority` already enforces it
-    fn update_marketing(ctx: ExecuteContext, marketing: Option<String>) -> ContractResult<ContractError> {
-      execute_transfer_authority(ctx, TransferAuthority::Marketing(marketing.clone()))?;
-      match marketing {
-        Some(marketing) => emit!("authority.transfer", { which: "marketing", marketing }),
-        None => emit!("authority.renounce", { which: "marketing" }),
-      }
+    fn update_marketing(ctx: ExecuteContext, marketing: Option<Addr>, expires: Option<Expiration>) -> ContractResult<ContractError> {
+      let expires = expires.unwrap_or(Expiration::Never {});
+      let auth = AuthorityTransfer::Marketing {
+        addr: marketing,
+        expires,
+      };
+      auth.transfer(&mut ctx)?;
       Ok(())
     }
 
@@ -279,9 +287,7 @@ pub mod contract {
     fn minter(ctx: QueryContext) -> Result<MinterResponse, ContractError> {
       let cap = retrieve!(TokenInfo)?.cap;
       Ok(MinterResponse {
-        minter: query_authority(ctx, Authority::Minter)?
-          .map(|m| m.to_string())
-          .unwrap_or("".to_string()),
+        minter: Authority::Minter.get(ctx.deps.storage)?.to_string(),
         cap,
       })
     }
@@ -303,7 +309,7 @@ pub mod contract {
         project: info.project,
         description: info.description,
         logo: retrieve!(LogoState)?.logo.map(|l| l.into()),
-        marketing: query_authority(ctx, Authority::Marketing)?,
+        marketing: Authority::Marketing.get_maybe(ctx.deps.storage)?,
       })
     }
 

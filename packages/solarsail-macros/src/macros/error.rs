@@ -11,8 +11,8 @@ pub fn generate_error_struct(errors: &Vec<crate::parsers::ErrorDef>) -> TokenStr
       #[error("{0}")]
       Generic(String),
 
-      #[error("Unauthorized")]
-      Unauthorized,
+      #[error("{0}")]
+      Authority(#[from] ::solarsail::authority::AuthorityError),
 
       #(#errors,)*
     }

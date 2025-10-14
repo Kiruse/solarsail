@@ -1,7 +1,7 @@
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Binary};
 use cw_utils::Expiration;
-use solarsail::ExecuteContext;
+use solarsail::{ExecuteContext, authority::AuthorityError};
 
 use crate::contract::ContractError;
 
@@ -22,7 +22,7 @@ pub struct Approval {
 impl Token {
   pub fn check_owner(&self, ctx: &ExecuteContext) -> Result<(), ContractError> {
     if self.owner != ctx.info.sender {
-      Err(ContractError::Unauthorized)
+      Err(AuthorityError::Unauthorized.into())
     } else {
       Ok(())
     }
@@ -32,7 +32,7 @@ impl Token {
     if self.approvals.iter().any(|approval| approval.spender == ctx.info.sender && !approval.expires.is_expired(&ctx.env.block)) {
       Ok(())
     } else {
-      Err(ContractError::Unauthorized)
+      Err(AuthorityError::Unauthorized.into())
     }
   }
 

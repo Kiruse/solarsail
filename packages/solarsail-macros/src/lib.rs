@@ -200,41 +200,8 @@ pub fn assert(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn invoke(input: TokenStream) -> TokenStream {
-  let input_str = input.to_string();
-  let parts: Vec<&str> = input_str.split(',').collect();
-
-  if parts.len() != 2 {
-    return syn::Error::new(
-      proc_macro2::Span::call_site().into(),
-      "invoke! macro expects exactly 2 arguments: recipient and msg"
-    ).to_compile_error().into();
-  }
-
-  let recipient = parts[0].trim();
-  let msg = parts[1].trim();
-
-  // Parse the recipient and msg as expressions
-  let recipient_expr = syn::parse_str::<syn::Expr>(recipient).unwrap_or_else(|_| {
-    syn::parse_str::<syn::Expr>("recipient").unwrap()
-  });
-
-  let msg_expr = syn::parse_str::<syn::Expr>(msg).unwrap_or_else(|_| {
-    syn::parse_str::<syn::Expr>("msg").unwrap()
-  });
-
-  quote! {
-    {
-      let submsg = cosmwasm_std::SubMsg::new(
-        cosmwasm_std::WasmMsg::Execute {
-          contract_addr: #recipient_expr.to_string(),
-          msg: #msg_expr,
-          funds: vec![],
-        }
-      );
-      __solarsail_submsgs.push(submsg);
-      Ok::<(), cosmwasm_std::StdError>(())
-    }
-  }.into()
+  let parsed = parse_macro_input!(input as parsers::Invoke);
+  quote! { #parsed }.into()
 }
 
 #[proc_macro]

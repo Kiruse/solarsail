@@ -1,5 +1,5 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Binary, Uint128};
+use cosmwasm_std::{Addr, Binary, Uint128};
 
 use crate::contract::ContractError;
 
@@ -75,4 +75,16 @@ pub enum EmbeddedLogo {
 pub enum LogoInfo {
   Url(String),
   Embedded,
+}
+
+#[cw_serde]
+pub enum Cw20ReceiverExecuteMsg {
+  Receive(Cw20ReceiveMsg),
+}
+
+#[cw_serde]
+pub struct Cw20ReceiveMsg {
+  pub sender: Addr,
+  pub amount: Uint128,
+  pub msg: Binary,
 }

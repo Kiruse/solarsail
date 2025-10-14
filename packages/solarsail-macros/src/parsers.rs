@@ -476,6 +476,51 @@ impl ToTokens for ErrorDef {
   }
 }
 
+pub struct Invoke {
+  pub recipient: Expr,
+  pub msg: Expr,
+  pub funds: Expr,
+}
+
+impl syn::parse::Parse for Invoke {
+  fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    let recipient: Expr = input.parse()?;
+    input.parse::<syn::Token![,]>()?;
+    let msg: Expr = input.parse()?;
+
+    let mut funds: Expr = syn::parse2(quote! { vec![] })?;
+
+    if input.peek(syn::Token![,]) {
+      let ident: Ident = input.parse()?;
+      input.parse::<syn::Token![=]>()?;
+      match ident.to_string().as_str() {
+        "funds" => {
+          funds = input.parse()?;
+        }
+        _ => {
+          return Err(syn::Error::new(ident.span(), "Unknown argument"));
+        }
+      }
+    }
+
+    Ok(Invoke { recipient, msg, funds })
+  }
+}
+
+impl ToTokens for Invoke {
+  fn to_tokens(&self, tokens: &mut TokenStream) {
+    let Invoke { recipient, msg, funds } = self;
+
+    tokens.extend(quote! {
+      ctx.invoke(::cosmwasm_std::SubMsg::new(::cosmwasm_std::WasmMsg::Execute {
+        contract_addr: #recipient.to_string(),
+        msg: #msg,
+        funds: #funds,
+      }))
+    });
+  }
+}
+
 /// Helper parser for `emit!` macro
 pub struct EmitEvent {
   pub name: String,
@@ -509,12 +554,12 @@ impl ToTokens for EmitEvent {
     let attrs = self.attrs.pairs
       .iter()
       .map(|(key, value)| {
-        quote! { .add_attribute(#key, #value) }
+        quote! { .add_attribute(#key, &#value) }
       })
       .collect::<Vec<_>>();
 
     tokens.extend(quote! {
-      __solarsail_events.push(::cosmwasm_std::Event::new(#name)#(#attrs)*)
+      ctx.emit(::cosmwasm_std::Event::new(#name)#(#attrs)*)
     });
   }
 }

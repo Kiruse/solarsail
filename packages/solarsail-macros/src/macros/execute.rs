@@ -23,7 +23,7 @@ pub fn transform(span: Span, func: &ItemFn) -> Result<TokenStream, syn::Error> {
         &auth.to_string().to_case(Case::Pascal),
         auth.span(),
       );
-      Some(quote! { check_authority(&ctx, Authority::#variant)?; })
+      Some(quote! { Authority::#variant.check(&ctx)?; })
     }
     None => None,
   };
@@ -64,10 +64,8 @@ pub fn transform(span: Span, func: &ItemFn) -> Result<TokenStream, syn::Error> {
 
   let transformed_func = quote! {
     #(#func_attrs)*
-    #func_vis fn #execute_func_name(ctx: ::solarsail::ExecuteContext, #msg: #msg_struct_name) #func_return {
+    #func_vis fn #execute_func_name(mut ctx: ::solarsail::ExecuteContext, #msg: #msg_struct_name) #func_return {
       #authority_check
-      let mut __solarsail_submsgs: Vec<::cosmwasm_std::SubMsg> = Vec::new();
-      let mut __solarsail_events: Vec<::cosmwasm_std::Event> = Vec::new();
 
       #(#param_extractions)*
 
@@ -75,7 +73,7 @@ pub fn transform(span: Span, func: &ItemFn) -> Result<TokenStream, syn::Error> {
 
       match result {
         Ok(()) => {
-          Ok(::cosmwasm_std::Response::new().add_submessages(__solarsail_submsgs).add_events(__solarsail_events))
+          Ok(::cosmwasm_std::Response::new().add_submessages(ctx.submsgs).add_events(ctx.events))
         }
         Err(e) => Err(e),
       }
@@ -108,7 +106,7 @@ pub fn generate_entrypoint(fns: &[Ident], has_authority: bool) -> TokenStream {
     })
     .collect::<Vec<_>>();
   if has_authority {
-    variants.push(quote! { TransferAuthority(TransferAuthority) });
+    variants.push(quote! { TransferAuthority(AuthorityTransfer) });
   }
 
   let mut match_arms = fns
@@ -129,7 +127,7 @@ pub fn generate_entrypoint(fns: &[Ident], has_authority: bool) -> TokenStream {
   if has_authority {
     match_arms.push(quote! {
       ExecuteMsg::TransferAuthority(msg) => {
-        execute_transfer_authority(ctx, msg).map_err(|e| ::cosmwasm_std::StdError::msg(e.to_string()))
+        msg.transfer(ctx).map_err(|e| ::cosmwasm_std::StdError::msg(e.to_string()))
       }
     });
   }
