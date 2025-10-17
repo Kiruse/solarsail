@@ -1,52 +1,40 @@
 use convert_case::{Case, Casing};
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Ident;
 
 use crate::Order;
-use crate::parsers::{Delete, Enumerate, Persist, Retrieve, State, StateMap, StateMapIndex, UpState};
+use crate::macros::utils::rename_ident;
+use crate::parsers::{Delete, Enumerate, Persist, Retrieve, StateIntegrated, StateMap, StateMapIndex, StateStore, UpState};
 
-pub type StateMacroInput = State;
+pub fn state_integrated(input: &StateIntegrated) -> TokenStream {
+  let name = &input.name;
+  let ty = &input.ty;
+  let fn_name = storage_name(name);
+  quote! {
+    pub fn #fn_name() -> ::solarsail::cw_storage_plus::Item<#ty> {
+      ::solarsail::cw_storage_plus::Item::new("state")
+    }
+  }
+}
 
-pub fn state(input: &StateMacroInput) -> TokenStream {
-  let fields = &input.fields.named;
-
-  // `authority` fields have their own `Item`s and are not included in the `State` struct
-  let field_definitions: Vec<_> = fields
+pub fn state_store(input: &StateStore) -> TokenStream {
+  let (field_names, field_types): (Vec<_>, Vec<_>) = input.fields.named
     .iter()
-    .filter(|field| {
-      !field.attrs.iter().any(|attr| attr.path().is_ident("authority"))
-    })
-    .map(|field| {
-      let ident = &field.ident;
-      let ty = &field.ty;
+    .map(|field| (field.ident.clone(), field.ty.clone()))
+    .unzip();
 
-      quote! {
-        pub #ident: #ty,
-      }
-    })
-    .collect();
-
-  let ty_name = input.identifier
-    .as_ref()
-    .map(|ident| ident.clone())
-    .unwrap_or_else(|| Ident::new("State", Span::call_site()));
-  let ty_name = struct_name(&ty_name);
-
-  let fn_name = input.identifier
-    .as_ref()
-    .map(|ident| ident.clone())
-    .unwrap_or_else(|| Ident::new("STATE", Span::call_site()));
-  let fn_name = storage_name(&fn_name);
+  let ty_name = struct_name(&input.name);
+  let fn_name = storage_name(&input.name);
 
   quote! {
-    #[cosmwasm_schema::cw_serde]
+    #[::solarsail::solarize]
     pub struct #ty_name {
-      #(#field_definitions)*
+      #(pub #field_names: #field_types),*
     }
 
-    pub fn #fn_name() -> ::cw_storage_plus::Item<#ty_name> {
-      ::cw_storage_plus::Item::new("state")
+    pub fn #fn_name() -> ::solarsail::cw_storage_plus::Item<#ty_name> {
+      ::solarsail::cw_storage_plus::Item::new("state")
     }
   }
 }
@@ -63,42 +51,27 @@ pub fn state_map(input: &StateMap) -> TokenStream {
   // without indexes
   if input.indexes.is_empty() {
     quote! {
-      pub fn #fn_name() -> ::cw_storage_plus::Map<#key_type, #value_type> {
-        ::cw_storage_plus::Map::new(#key)
+      pub fn #fn_name() -> ::solarsail::cw_storage_plus::Map<#key_type, #value_type> {
+        ::solarsail::cw_storage_plus::Map::new(#key)
       }
     }
   }
   // with indexes
   else {
-    let idx_fields = input.indexes
-      .iter()
-      .map(|StateMapIndex { field, ty, unique }| {
-        if *unique {
-          quote! {
-            pub #field: ::cw_storage_plus::UniqueIndex<'a, #ty, #value_type, ()>
-          }
-        } else {
-          quote! {
-            pub #field: ::cw_storage_plus::MultiIndex<'a, #ty, #value_type, #key_type>
-          }
-        }
-      })
-      .collect::<Vec<_>>();
-
     let idx_init = input.indexes
       .iter()
       .map(|StateMapIndex { field, unique, .. }| {
         let idx_key = format!("{}__{}", key, field);
-        if *unique {
+        if unique.is_some() {
           quote! {
-            #field: ::cw_storage_plus::UniqueIndex::new(
+            #field: ::solarsail::cw_storage_plus::UniqueIndex::new(
               |data| data.#field.clone(),
               #idx_key
             )
           }
         } else {
           quote! {
-            #field: ::cw_storage_plus::MultiIndex::new(
+            #field: ::solarsail::cw_storage_plus::MultiIndex::new(
               |_pk, data| data.#field.clone(),
               #key,
               #idx_key
@@ -108,36 +81,34 @@ pub fn state_map(input: &StateMap) -> TokenStream {
       })
       .collect::<Vec<_>>();
 
-    let idx_extract = input.indexes
+    let (fields, field_types): (Vec<_>, Vec<_>) = input.indexes
       .iter()
-      .map(|StateMapIndex { field, .. }| {
-        quote! { &self.#field }
+      .map(|StateMapIndex { field, ty, unique }| {
+        let ty = if unique.is_some() {
+          quote! { ::solarsail::cw_storage_plus::UniqueIndex<'a, #ty, #value_type, ()> }
+        } else {
+          quote! { ::solarsail::cw_storage_plus::MultiIndex<'a, #ty, #value_type, #key_type> }
+        };
+        (field, ty)
       })
-      .collect::<Vec<_>>();
+      .unzip();
 
-    let indexes_struct = Ident::new(
-      &format!("{}Indexes", struct_name(name).to_string().to_case(Case::Pascal)),
-      Span::mixed_site(),
-    );
-
-    let indexes_fn = Ident::new(
-      &format!("{}_indexes", fn_name.to_string().to_case(Case::Snake)),
-      Span::mixed_site(),
-    );
+    let indexes_struct = rename_ident!(Case::Pascal, "{}Indexes", name);
+    let indexes_fn = rename_ident!(Case::Snake, "{}_indexes", fn_name);
 
     quote! {
-      pub fn #fn_name<'a>() -> ::cw_storage_plus::IndexedMap<#key_type, #value_type, #indexes_struct<'a>> {
-        ::cw_storage_plus::IndexedMap::new(#key, #indexes_fn())
+      pub fn #fn_name<'a>() -> ::solarsail::cw_storage_plus::IndexedMap<#key_type, #value_type, #indexes_struct<'a>> {
+        ::solarsail::cw_storage_plus::IndexedMap::new(#key, #indexes_fn())
       }
 
       pub struct #indexes_struct<'a> {
-        #(#idx_fields),*
+        #(pub #fields: #field_types),*
       }
 
-      impl<'a> ::cw_storage_plus::IndexList<#value_type> for #indexes_struct<'a> {
-        fn get_indexes(&self) -> Box<dyn Iterator<Item = &dyn ::cw_storage_plus::Index<#value_type>> + '_> {
-          let v: Vec<&dyn ::cw_storage_plus::Index<#value_type>> = vec![
-            #(#idx_extract),*
+      impl<'a> ::solarsail::cw_storage_plus::IndexList<#value_type> for #indexes_struct<'a> {
+        fn get_indexes(&self) -> Box<dyn Iterator<Item = &dyn ::solarsail::cw_storage_plus::Index<#value_type>> + '_> {
+          let v: Vec<&dyn ::solarsail::cw_storage_plus::Index<#value_type>> = vec![
+            #(&self.#fields),*
           ];
           Box::new(v.into_iter())
         }
@@ -151,7 +122,7 @@ pub fn state_map(input: &StateMap) -> TokenStream {
         fn idx(&self) -> #indexes_struct<'a>;
       }
 
-      impl<'a, K, V> IndexedMapExt<'a, K, V, #indexes_struct<'a>> for ::cw_storage_plus::IndexedMap<K, V, #indexes_struct<'a>> {
+      impl<'a, K, V> IndexedMapExt<'a, K, V, #indexes_struct<'a>> for ::solarsail::cw_storage_plus::IndexedMap<K, V, #indexes_struct<'a>> {
         fn idx(&self) -> #indexes_struct<'a> {
           #indexes_fn()
         }
@@ -199,30 +170,28 @@ pub fn upstate(input: &UpState) -> TokenStream {
   match input {
     UpState::Map { map_name, item_name, kvs } => {
       let store_name = storage_name(map_name);
-      let pairs = kvs.pairs.iter().map(|(key, value)| {
-        quote! { #key: #value }
-      }).collect::<Vec<_>>();
+      let (keys, values): (Vec<_>, Vec<_>) = kvs.pairs
+        .iter()
+        .map(|pair| (&pair.key, &pair.value))
+        .unzip();
       quote! {
-        #store_name().update(ctx.deps.storage, #item_name, |old| -> Result<_, cosmwasm_std::StdError> {
-          Ok(Item {
-            #(#pairs,)*
-            ..old
-          })
+        #store_name().update(ctx.deps.storage, #item_name, |old| -> Result<_, ::solarsail::cw_std::StdError> {
+          let mut old = old.ok_or(::solarsail::cw_std::StdError::msg("old state not found"))?;
+          #(old.#keys = #values;)*
+          Ok(old)
         })
       }.into()
     }
     UpState::Store { store_name, kvs } => {
-      let struct_name = struct_name(store_name);
       let store_name = storage_name(store_name);
-      let pairs = kvs.pairs.iter().map(|(key, value)| {
-        quote! { #key: #value }
-      }).collect::<Vec<_>>();
+      let (keys, values): (Vec<_>, Vec<_>) = kvs.pairs
+        .iter()
+        .map(|pair| (&pair.key, &pair.value))
+        .unzip();
       quote! {
-        #store_name().update(ctx.deps.storage, |old| -> Result<_, cosmwasm_std::StdError> {
-          Ok(#struct_name {
-            #(#pairs,)*
-            ..old
-          })
+        #store_name().update(ctx.deps.storage, |mut old| -> Result<_, ::solarsail::cw_std::StdError> {
+          #(old.#keys = #values;)*
+          Ok(old)
         })
       }.into()
     }
@@ -252,19 +221,19 @@ pub fn enumerate(input: &Enumerate) -> TokenStream {
 
   // Order type doesn't implement ToTokens, so we just manually wrap it
   let order = match order {
-    Order::Ascending => quote! { ::cosmwasm_std::Order::Ascending },
-    Order::Descending => quote! { ::cosmwasm_std::Order::Descending },
+    Order::Ascending => quote! { ::solarsail::cw_std::Order::Ascending },
+    Order::Descending => quote! { ::solarsail::cw_std::Order::Descending },
   };
 
   let min = match &bounds.start {
     None => quote! { None },
-    Some(start) => quote! { #start.map(|v| ::cw_storage_plus::Bound::inclusive(v)) },
+    Some(start) => quote! { #start.map(|v| ::solarsail::cw_storage_plus::Bound::inclusive(v)) },
   };
 
   let max = match &bounds.end {
     None => quote! { None },
-    Some(end) if bounds.closed => quote! { #end.map(|v| ::cw_storage_plus::Bound::inclusive(v)) },
-    Some(end) => quote! { #end.map(|v| ::cw_storage_plus::Bound::exclusive(v)) },
+    Some(end) if bounds.closed => quote! { #end.map(|v| ::solarsail::cw_storage_plus::Bound::inclusive(v)) },
+    Some(end) => quote! { #end.map(|v| ::solarsail::cw_storage_plus::Bound::exclusive(v)) },
   };
 
   quote! {
@@ -286,15 +255,9 @@ pub fn delete(input: &Delete) -> TokenStream {
 }
 
 fn storage_name(name: &Ident) -> Ident {
-  Ident::new(
-    &format!("storage_{}", name.to_string().to_case(Case::Snake)),
-    name.span(),
-  )
+  rename_ident!(Case::Snake, "storage_{}", name)
 }
 
 fn struct_name(name: &Ident) -> Ident {
-  Ident::new(
-    &format!("{}", name.to_string().to_case(Case::Pascal)),
-    name.span(),
-  )
+  rename_ident!(Case::Pascal, "{}", name)
 }

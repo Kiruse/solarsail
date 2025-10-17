@@ -1,11 +1,8 @@
 pub mod authority;
 pub mod contract;
-pub mod error;
-pub mod execute;
 pub mod instantiate;
 pub mod migrate;
-pub mod modulate;
-pub mod modulator;
-pub mod query;
+pub mod returns;
+pub mod solarize;
 pub mod state;
 pub mod utils;

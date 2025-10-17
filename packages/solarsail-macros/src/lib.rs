@@ -1,45 +1,149 @@
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
-use syn::{parse_macro_input, Ident};
-use syn::spanned::Spanned;
+use syn::parse_macro_input;
 
-use crate::macros::{contract::ContractMode, modulator::ItemModulator};
 use crate::parsers::Order;
 
 mod macros;
 mod parsers;
 
-#[proc_macro_attribute]
-pub fn contract(args: TokenStream, input: TokenStream) -> TokenStream {
-  let args = proc_macro2::TokenStream::from(args);
-  let mode = if !args.is_empty() {
-    let span = args.span();
-    match syn::parse2::<Ident>(args) {
-      Ok(ident) => ContractMode::from(ident),
-      Err(_) => {
-        return syn::Error::new(span, "Invalid contract mode").to_compile_error().into();
-      },
-    }
-  } else {
-    ContractMode::Full
-  };
-  crate::macros::contract::contract(mode, &parse_macro_input!(input as syn::ItemMod)).into()
-}
-
 #[proc_macro]
-pub fn state(input: TokenStream) -> TokenStream {
-  crate::macros::state::state(&parse_macro_input!(input as crate::macros::state::StateMacroInput)).into()
+pub fn contract(input: TokenStream) -> TokenStream {
+  let res = crate::macros::contract::contract(parse_macro_input!(input as parsers::ContractDef));
+  match res {
+    Ok(expanded) => expanded.into(),
+    Err(e) => e.to_compile_error().into(),
+  }
 }
 
-/// Define a Map for key-value storage.
+/// The `solarize` macro is a multi-purpose macro that applies to various code structures:
+///
+/// ## `#[solarize(execute|query)] impl`
+/// When applied to an `impl` block, it can be used to define the execution & query messages and
+/// their handlers. Any `pub fn` will become a part of the contract's public interface; the other
+/// functions will become a part of its internal interface.
 ///
 /// ```rust
-/// state_map!(balances = String => Uint128);
-/// state_map!(allowances = (String, String) => Allowance);
+/// #[solarize(execute)]
+/// impl Cw20Contract {
+///     fn mint(ctx: ExecuteContext, amount: Uint128, recipient: Addr) -> ExecuteResult<ContractError> {
+///         // ... implement mint handler here
+///     }
+///
+///     pub fn transfer(ctx: ExecuteContext, amount: Uint128, recipient: Addr) -> ExecuteResult<ContractError> {
+///         // ... implement transfer handler here
+///     }
+/// }
 /// ```
+///
+/// ```rust
+/// #[solarize(query)]
+/// impl Cw20Contract {
+///     #[returns({
+///         balance: Uint128,
+///     })]
+///     pub fn balance_of(ctx: QueryContext, address: Addr) -> Result<_, ContractError> {
+///         let balance = retrieve!(Balances[address])?;
+///         Ok(respond! { balance })
+///     }
+/// }
+/// ```
+///
+/// ## `#[solarize] enum|struct`
+/// When applied to an `enum` or a `struct` block, it can be used to transform the type into a
+/// compatible network type, i.e. a message. You don't have to use this macro, but it's convenient.
+/// If you choose not to, you will need to manually implement serde traits.
+///
+/// ```rust
+/// #[solarize]
+/// pub struct TokenInfo {
+///     pub name: String,
+///     pub symbol: String,
+///     pub description: String,
+///     pub decimals: u8,
+///     pub cap: Option<Uint128>,
+/// }
+/// ```
+///
+/// ## `#[solarize] fn instantiate|migrate`
+/// When applied to an `fn instantiate` or `fn migrate`, these two specially designated methods are
+/// transformed into their respective contract entrypoints & handlers.
+///
+/// ```rust
+/// #[solarize]
+/// fn instantiate(
+///     ctx: ExecuteContext,
+///     name: String,
+///     symbol: String,
+///     description: String,
+///     decimals: u8,
+///     cap: Option<Uint128>,
+/// ) -> ExecuteResult<ContractError> {
+///     persist!(TokenInfo { name, symbol, description, decimals, cap })?;
+///     Ok(())
+/// }
+/// ```
+///
+/// ```rust
+/// #[solarize]
+/// fn migrate(ctx: ExecuteContext) -> ExecuteResult<ContractError> {
+///     // add whatever storage migration logic you need here.
+///     // migration will receive further abstractions in the future to aid in ensuring
+///     // the migration is proper.
+///     // if no storage migration is necessary, just return `Ok(())`. the presence of
+///     // this method makes a contract migrateable; without it, you cannot migrate.
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn solarize(args: TokenStream, input: TokenStream) -> TokenStream {
+  let input = parse_macro_input!(input as parsers::SolarizePrep);
+  match solarize_impl(args, input) {
+    Ok(expanded) => expanded.into(),
+    Err(e) => e.to_compile_error().into(),
+  }
+}
+
+fn solarize_impl(args: TokenStream, input: parsers::SolarizePrep) -> Result<proc_macro2::TokenStream, syn::Error> {
+  match input {
+    parsers::SolarizePrep::Fn(func) => {
+      if !args.is_empty() {
+        Err(syn::Error::new(Span::call_site(), "solarize can only be applied to `instantiate` or `migrate` functions"))
+      } else {
+        match func.sig.ident.to_string().as_str() {
+          "instantiate" =>
+            crate::macros::instantiate::transform(&func),
+          "migrate" =>
+            crate::macros::migrate::transform(&func),
+          _ => Err(syn::Error::new(func.sig.ident.span(), "Unknown solarize fn kind"))
+        }
+      }
+    }
+    parsers::SolarizePrep::Impl(item) => {
+      let args = syn::parse(args)?;
+      crate::macros::solarize::transform_impl(args, item)
+    }
+    parsers::SolarizePrep::Ty(ty) => {
+      crate::macros::solarize::transform_ty(ty)
+    }
+  }
+}
+
+#[proc_macro_attribute]
+pub fn authority(args: TokenStream, input: TokenStream) -> TokenStream {
+  let authority = parse_macro_input!(args as parsers::AuthorityArgs);
+  let item = parse_macro_input!(input as syn::ItemFn);
+  match crate::macros::authority::transform(item, &authority.authorities.iter().collect::<Vec<_>>()) {
+    Ok(expanded) => expanded.into(),
+    Err(e) => e.to_compile_error().into(),
+  }
+}
+
 #[proc_macro]
-pub fn state_map(input: TokenStream) -> TokenStream {
-  crate::macros::state::state_map(&parse_macro_input!(input as parsers::StateMap)).into()
+pub fn response(input: TokenStream) -> TokenStream {
+  let parsed = parse_macro_input!(input as parsers::Response);
+  quote! { SSAnonymousResponse #parsed }.into()
 }
 
 /// Read the current state from the storage.
@@ -158,19 +262,6 @@ pub fn enumerate(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn delete(input: TokenStream) -> TokenStream {
   macros::state::delete(&parse_macro_input!(input as parsers::Delete)).into()
-}
-
-#[proc_macro_attribute]
-pub fn modulate(args: TokenStream, input: TokenStream) -> TokenStream {
-  let modulator_ident = parse_macro_input!(args as Ident);
-  let item = parse_macro_input!(input as syn::ItemFn);
-  crate::macros::modulate::modulate(&item, modulator_ident).into()
-}
-
-#[proc_macro]
-pub fn modulator(input: TokenStream) -> TokenStream {
-  let item = parse_macro_input!(input as ItemModulator);
-  crate::macros::modulator::modulator(&item).into()
 }
 
 /// Assert a condition and return an error if it fails.

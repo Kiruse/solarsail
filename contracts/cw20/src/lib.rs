@@ -1,395 +1,319 @@
+use cosmwasm_std::{Addr, Binary, Uint128, to_json_binary};
+use solarsail::{scaffold::ExecuteResult, *};
+
 pub mod types;
+use types::*;
 
-#[solarsail::contract]
-pub mod contract {
-  use cosmwasm_std::{Addr, Uint128};
-  use solarsail::*;
+contract! {
+  name! Cw20;
 
-  use crate::types::*;
+  authority! [minter, marketing];
 
-  state!({
-    #[authority]
-    minter: Option<Addr>,
-
-    #[authority]
-    marketing: Option<Addr>,
-  });
-
-  state!(TokenInfo, {
+  state! TokenInfo {
     name: String,
     symbol: String,
     decimals: u8,
     total_supply: Uint128,
     cap: Option<Uint128>,
-  });
+  }
 
-  state!(MarketingInfo, {
+  state! MarketingInfo {
     project: Option<String>,
     description: Option<String>,
-  });
-
-  state!(LogoState, {
     logo: Option<Logo>,
-  });
+  }
 
-  state_map!(balances   : Addr => Uint128);
-  state_map!(allowances : (Addr, Addr) => Allowance);
+  state! Balances   : Addr => Uint128;
+  state! Allowances : (Addr, Addr) => Allowance;
 
-  error!(InsufficientBalance, "Insufficient balance");
-  error!(Overflow(#[from] cosmwasm_std::OverflowError));
+  error! InsufficientBalance : "Insufficient balance";
+  error! Overflow(#[from] cosmwasm_std::OverflowError) : "Overflow: {0}";
+}
 
-  pub fn instantiate(
-    ctx: ExecuteContext,
+#[solarize]
+fn instantiate(
+  mut ctx: ExecuteContext,
+  name: String,
+  symbol: String,
+  decimals: Option<u8>,
+  cap: Option<Uint128>,
+) -> ExecuteResult<Cw20Error> {
+  persist!(TokenInfo {
+    name,
+    symbol,
+    decimals: decimals.unwrap_or(6u8),
+    total_supply: Uint128::zero(),
+    cap,
+  })?;
+
+  Ok(())
+}
+
+#[solarize]
+fn migrate(ctx: ExecuteContext) -> ExecuteResult<Cw20Error> {
+  Ok(())
+}
+
+#[solarize(execute)]
+impl Cw20Contract {
+  pub fn transfer(ctx: &mut ExecuteContext, recipient: Addr, amount: Uint128) -> Result<(), Cw20Error> {
+    let sender = &ctx.info.sender;
+
+    let balance = retrieve!(balances[sender.clone()])?;
+    solarsail::assert!(balance >= amount, Cw20Error::InsufficientBalance);
+    persist!(balances[sender.clone()] = &(balance - amount))?;
+
+    let balance = retrieve!(balances[recipient.clone()])?;
+    persist!(balances[recipient.clone()] = &(balance + amount))?;
+    emit!("transfer", { recipient, amount });
+    Ok(())
+  }
+
+  pub fn send(ctx: &mut ExecuteContext, recipient: Addr, amount: Uint128, msg: Binary) -> Result<(), Cw20Error> {
+    let sender = &ctx.info.sender;
+    let balance = retrieve!(balances[sender.clone()])?;
+
+    solarsail::assert!(balance >= amount, Cw20Error::InsufficientBalance);
+    persist!(balances[sender.clone()] = &(balance - amount))?;
+
+    let recipient_balance = retrieve!(balances[recipient.clone()])?;
+    persist!(balances[recipient.clone()] = &(recipient_balance + amount))?;
+
+    let msg = to_json_binary(&Cw20ReceiverExecuteMsg::Receive(Cw20ReceiveMsg {
+      sender: ctx.info.sender.clone(),
+      amount: amount.clone(),
+      msg,
+    }))?;
+    invoke!(recipient, msg);
+    emit!("send", { recipient, amount });
+    Ok(())
+  }
+
+  pub fn burn(ctx: &mut ExecuteContext, amount: Uint128) -> Result<(), Cw20Error> {
+    let sender = &ctx.info.sender;
+    let balance = retrieve!(balances[sender.clone()])?;
+    solarsail::assert!(balance >= amount, Cw20Error::InsufficientBalance);
+    persist!(balances[sender.clone()] = &(balance - amount))?;
+    upstate!(TokenInfo: { total_supply: old.total_supply - amount })?;
+    emit!("burn", { amount });
+    Ok(())
+  }
+
+  #[authority(minter)]
+  fn mint(ctx: &mut ExecuteContext, amount: Uint128, recipient: Addr) -> Result<(), Cw20Error> {
+    let balance = retrieve!(balances[recipient.clone()])?;
+    persist!(balances[recipient.clone()] = &(balance + amount))?;
+    upstate!(TOKEN_INFO: { total_supply: old.total_supply + amount })?;
+    emit!("mint", { recipient, amount });
+    Ok(())
+  }
+
+  pub fn increase_allowance(ctx: &mut ExecuteContext, spender: Addr, amount: Uint128, expiry: Option<Expiry>) -> Result<(), Cw20Error> {
+    let key = (ctx.info.sender.clone(), spender.clone());
+    let allowance = retrieve!(allowances[key.clone()])?;
+    persist!(allowances[key] = &(allowance.raise(amount)?.expire(expiry.clone())))?;
+    emit!("allowance.increase", {
+      spender,
+      amount,
+      expiry: expiry.unwrap_or(Expiry::Never),
+    });
+    Ok(())
+  }
+
+  pub fn decrease_allowance(ctx: &mut ExecuteContext, spender: Addr, amount: Uint128) -> Result<(), Cw20Error> {
+    let key = (ctx.info.sender.clone(), spender.clone());
+    let allowance = retrieve!(allowances[key.clone()])?;
+    persist!(allowances[key] = &(allowance.lower(amount)?))?;
+    emit!("allowance.decrease", { spender, amount });
+    Ok(())
+  }
+
+  pub fn transfer_from(ctx: &mut ExecuteContext, sender: Addr, recipient: Addr, amount: Uint128) -> Result<(), Cw20Error> {
+    let key = (ctx.info.sender.clone(), sender.clone());
+    let allowance = retrieve!(allowances[key.clone()])?;
+    persist!(allowances[key] = &(allowance.lower(amount)?))?;
+
+    let balance = retrieve!(balances[sender.clone()])?;
+    solarsail::assert!(balance >= amount, Cw20Error::InsufficientBalance);
+    persist!(balances[sender.clone()] = &(balance.checked_sub(amount)?))?;
+
+    let balance = retrieve!(balances[recipient.clone()])?;
+    persist!(balances[recipient.clone()] = &(balance.checked_add(amount)?))?;
+    emit!("transfer_from", { sender, recipient, amount });
+    Ok(())
+  }
+
+  pub fn send_from(ctx: &mut ExecuteContext, sender: Addr, recipient: Addr, amount: Uint128, msg: Binary) -> Result<(), Cw20Error> {
+    let key = (ctx.info.sender.clone(), sender.clone());
+    let allowance = retrieve!(allowances[key.clone()])?;
+    persist!(allowances[key] = &(allowance.lower(amount)?))?;
+
+    let balance = retrieve!(balances[sender.clone()])?;
+    solarsail::assert!(balance >= amount, Cw20Error::InsufficientBalance);
+    persist!(balances[sender.clone()] = &(balance - amount))?;
+
+    let balance = retrieve!(balances[recipient.clone()])?;
+    persist!(balances[recipient.clone()] = &(balance.checked_add(amount)?))?;
+
+    invoke!(recipient, msg);
+    emit!("send_from", { sender, recipient, amount });
+    Ok(())
+  }
+
+  // Instead of `update_minter` and `update_marketing`, we have `authority` as a central point for
+  // all authority-related operations.
+  fn authority(ctx: &mut ExecuteContext, #[msg] op: AuthorityOperation) -> Result<(), Cw20Error> {
+    op.handle(ctx)?;
+    Ok(())
+  }
+
+  #[authority(marketing)]
+  fn upload_logo(ctx: &mut ExecuteContext, #[msg] logo: Logo) -> Result<(), Cw20Error> {
+    upstate!(MarketingInfo: {
+      logo: Some(logo),
+    })?;
+    emit!("logo.update");
+    Ok(())
+  }
+}
+
+#[solarize(query)]
+impl Cw20Contract {
+  #[returns({
+    balance: Uint128,
+  })]
+  pub fn balance(ctx: QueryContext, address: Addr) -> Result<_, Cw20Error> {
+    Ok(response! {
+      balance: retrieve!(balances[address])?,
+    })
+  }
+
+  #[returns({
     name: String,
     symbol: String,
-    decimals: Option<u8>,
+    decimals: u8,
+    total_supply: Uint128,
+  })]
+  pub fn token_info(ctx: QueryContext) -> Result<_, Cw20Error> {
+    let info = retrieve!(TokenInfo)?;
+    Ok(response! {
+      name: info.name,
+      symbol: info.symbol,
+      decimals: info.decimals,
+      total_supply: info.total_supply,
+    })
+  }
+
+  #[returns({
+    allowance: Uint128,
+    expires: Expiry,
+  })]
+  pub fn allowance(ctx: QueryContext, owner: Addr, spender: Addr) -> Result<_, Cw20Error> {
+    let key = (owner.clone(), spender.clone());
+    Ok(response! {
+      allowance: retrieve!(allowances[key.clone()])?.amount,
+      expires: retrieve!(allowances[key])?.expiry.unwrap_or(Expiry::Never),
+    })
+  }
+
+  #[returns({
+    minter: Addr,
     cap: Option<Uint128>,
-  ) -> ContractResult<ContractError> {
-    persist!(TokenInfo {
-      name,
-      symbol,
-      decimals: decimals.unwrap_or(6u8),
-      total_supply: Uint128::zero(),
+  })]
+  pub fn minter(ctx: QueryContext) -> Result<_, Cw20Error> {
+    let cap = retrieve!(TokenInfo)?.cap;
+    Ok(response! {
+      minter: Authority::Minter.get(ctx.deps.storage)?,
       cap,
-    })?;
-
-    Ok(())
+    })
   }
 
-  pub fn migrate(ctx: ExecuteContext) -> ContractResult<ContractError> {
-    Ok(())
+  #[returns({
+    project: String,
+    description: String,
+    logo: Option<LogoInfo>,
+    marketing: Option<Addr>,
+  })]
+  pub fn marketing_info(ctx: QueryContext) -> Result<_, Cw20Error> {
+    let info = retrieve!(MarketingInfo)?;
+    Ok(response! {
+      project: info.project.unwrap_or_default(),
+      description: info.description.unwrap_or_default(),
+      logo: info.logo.map(|l| l.into()),
+      marketing: Authority::Marketing.get_maybe(ctx.deps.storage)?,
+    })
   }
 
-  #[contract(execute)]
-  pub mod execute {
-    use cosmwasm_std::{Binary, to_json_binary};
-    use solarsail::authority::Expiration;
-
-    use super::*;
-
-    #[execute]
-    fn transfer(ctx: ExecuteContext, recipient: Addr, amount: Uint128) -> ContractResult<ContractError> {
-      let sender = &ctx.info.sender;
-
-      let balance = retrieve!(balances[sender.clone()])?;
-      solarsail::assert!(balance >= amount, ContractError::InsufficientBalance);
-      persist!(balances[sender.clone()] = &(balance - amount))?;
-
-      let balance = retrieve!(balances[recipient.clone()])?;
-      persist!(balances[recipient.clone()] = &(balance + amount))?;
-      emit!("transfer", { recipient, amount });
-      Ok(())
-    }
-
-    #[execute]
-    fn send(ctx: ExecuteContext, recipient: Addr, amount: Uint128, msg: Binary) -> ContractResult<ContractError> {
-      let sender = &ctx.info.sender;
-      let balance = retrieve!(balances[sender.clone()])?;
-
-      solarsail::assert!(balance >= amount, ContractError::InsufficientBalance);
-      persist!(balances[sender.clone()] = &(balance - amount))?;
-
-      let recipient_balance = retrieve!(balances[recipient.clone()])?;
-      persist!(balances[recipient.clone()] = &(recipient_balance + amount))?;
-
-      let msg = to_json_binary(&Cw20ReceiverExecuteMsg::Receive(Cw20ReceiveMsg {
-        sender: ctx.info.sender.clone(),
-        amount: amount.clone(),
-        msg,
-      }))?;
-      invoke!(recipient, msg);
-      emit!("send", { recipient, amount });
-      Ok(())
-    }
-
-    #[execute]
-    fn burn(ctx: ExecuteContext, amount: Uint128) -> ContractResult<ContractError> {
-      let sender = &ctx.info.sender;
-      let balance = retrieve!(balances[sender.clone()])?;
-      solarsail::assert!(balance >= amount, ContractError::InsufficientBalance);
-      persist!(balances[sender.clone()] = &(balance - amount))?;
-      upstate!(TokenInfo: { total_supply: old.total_supply - amount })?;
-      emit!("burn", { amount: amount.to_string() });
-      Ok(())
-    }
-
-    #[execute]
-    #[authority(minter)]
-    fn mint(ctx: ExecuteContext, amount: Uint128, recipient: Addr) -> ContractResult<ContractError> {
-      let balance = retrieve!(balances[recipient.clone()])?;
-      persist!(balances[recipient.clone()] = &(balance + amount))?;
-      upstate!(TOKEN_INFO: { total_supply: old.total_supply + amount })?;
-      emit!("mint", { recipient, amount });
-      Ok(())
-    }
-
-    #[execute]
-    fn increase_allowance(ctx: ExecuteContext, spender: Addr, amount: Uint128, expiry: Option<Expiry>) -> ContractResult<ContractError> {
-      let key = (ctx.info.sender.clone(), spender.clone());
-      let allowance = retrieve!(allowances[key.clone()])?;
-      persist!(allowances[key] = &(allowance.raise(amount)?.expire(expiry.clone())))?;
-      emit!("allowance.increase", {
-        spender,
-        amount,
-        expiry: expiry.unwrap_or(Expiry::Never),
-      });
-      Ok(())
-    }
-
-    #[execute]
-    fn decrease_allowance(ctx: ExecuteContext, spender: Addr, amount: Uint128) -> ContractResult<ContractError> {
-      let key = (ctx.info.sender.clone(), spender.clone());
-      let allowance = retrieve!(allowances[key.clone()])?;
-      persist!(allowances[key] = &(allowance.lower(amount)?))?;
-      emit!("allowance.decrease", { spender, amount });
-      Ok(())
-    }
-
-    #[execute]
-    fn transfer_from(ctx: ExecuteContext, sender: Addr, recipient: Addr, amount: Uint128) -> ContractResult<ContractError> {
-      let key = (ctx.info.sender.clone(), sender.clone());
-      let allowance = retrieve!(allowances[key.clone()])?;
-      persist!(allowances[key] = &(allowance.lower(amount)?))?;
-
-      let balance = retrieve!(balances[sender.clone()])?;
-      solarsail::assert!(balance >= amount, ContractError::InsufficientBalance);
-      persist!(balances[sender.clone()] = &(balance.checked_sub(amount)?))?;
-
-      let balance = retrieve!(balances[recipient.clone()])?;
-      persist!(balances[recipient.clone()] = &(balance.checked_add(amount)?))?;
-      emit!("transfer_from", { sender, recipient, amount });
-      Ok(())
-    }
-
-    #[execute]
-    fn send_from(ctx: ExecuteContext, sender: Addr, recipient: Addr, amount: Uint128, msg: Binary) -> ContractResult<ContractError> {
-      let key = (ctx.info.sender.clone(), sender.clone());
-      let allowance = retrieve!(allowances[key.clone()])?;
-      persist!(allowances[key] = &(allowance.lower(amount)?))?;
-
-      let balance = retrieve!(balances[sender.clone()])?;
-      solarsail::assert!(balance >= amount, ContractError::InsufficientBalance);
-      persist!(balances[sender.clone()] = &(balance - amount))?;
-
-      let balance = retrieve!(balances[recipient.clone()])?;
-      persist!(balances[recipient.clone()] = &(balance.checked_add(amount)?))?;
-
-      invoke!(recipient, msg);
-      emit!("send_from", { sender, recipient, amount });
-      Ok(())
-    }
-
-    #[execute]
-    // no need for #[authority(minter)] here because the `execute_transfer_authority` already enforces it
-    fn update_minter(ctx: ExecuteContext, minter: Option<Addr>, expires: Option<Expiration>) -> ContractResult<ContractError> {
-      let expires = expires.unwrap_or(Expiration::Never {});
-      let auth = AuthorityTransfer::Minter {
-        addr: minter.clone(),
-        expires,
-      };
-      auth.transfer(&mut ctx)?;
-      Ok(())
-    }
-
-    #[execute]
-    // no need for #[authority(marketing)] here because the `execute_transfer_authority` already enforces it
-    fn update_marketing(ctx: ExecuteContext, marketing: Option<Addr>, expires: Option<Expiration>) -> ContractResult<ContractError> {
-      let expires = expires.unwrap_or(Expiration::Never {});
-      let auth = AuthorityTransfer::Marketing {
-        addr: marketing,
-        expires,
-      };
-      auth.transfer(&mut ctx)?;
-      Ok(())
-    }
-
-    #[execute]
-    #[authority(marketing)]
-    fn upload_logo(ctx: ExecuteContext, #[msg] logo: Logo) -> ContractResult<ContractError> {
-      persist!(LogoState {
-        logo: Some(logo),
-      })?;
-      emit!("logo.update");
-      Ok(())
+  #[returns({
+    mime_type: String,
+    data: Binary,
+  })]
+  pub fn download_logo(ctx: QueryContext) -> Result<_, Cw20Error> {
+    let logo = retrieve!(MarketingInfo)?.logo;
+    match logo {
+      Some(Logo::Url(_)) =>
+        return Err(Cw20Error::generic("Logo is a URL, cannot download. Query URL with `marketing_info` instead.")),
+      Some(Logo::Embedded(EmbeddedLogo::Svg(data))) => Ok(response! {
+        mime_type: "image/svg+xml".to_string(),
+        data,
+      }),
+      Some(Logo::Embedded(EmbeddedLogo::Png(data))) => Ok(response! {
+        mime_type: "image/png".to_string(),
+        data,
+      }),
+      None => Err(Cw20Error::generic("Token has no logo.")),
     }
   }
 
-  #[contract(query)]
-  pub mod query {
-    use cosmwasm_schema::cw_serde;
-    use cosmwasm_std::Binary;
+  #[returns({
+    allowances: Vec<Allowance>,
+    next: Option<Addr>,
+  })]
+  pub fn all_allowances(ctx: QueryContext, owner: Addr, start_after: Option<Addr>, limit: Option<u32>) -> Result<_, Cw20Error> {
+    let iter = enumerate!(allowances[owner], start_after.., descending);
+    let limit = limit.unwrap_or(100) as usize;
 
-    use super::*;
+    let mut allowances = iter
+      .take(limit + 1)
+      .collect::<Result<Vec<_>, _>>()?;
 
-    #[cw_serde]
-    pub struct BalanceResponse {
-      pub balance: Uint128,
-    }
+    let next = if allowances.len() == limit + 1 {
+      Some(allowances.pop().unwrap().0)
+    } else {
+      None
+    };
 
-    #[query]
-    fn balance(ctx: QueryContext, address: Addr) -> Result<BalanceResponse, ContractError> {
-      Ok(BalanceResponse {
-        balance: retrieve!(balances[address])?,
-      })
-    }
+    Ok(response! {
+      allowances: allowances
+        .into_iter()
+        .map(|(_, allowance)| allowance)
+        .collect::<Vec<_>>(),
+      next,
+    })
+  }
 
-    #[cw_serde]
-    pub struct TokenInfoResponse {
-      pub name: String,
-      pub symbol: String,
-      pub decimals: u8,
-      pub total_supply: Uint128,
-    }
+  #[returns({
+    accounts: Vec<Addr>,
+    next: Option<Addr>,
+  })]
+  pub fn all_accounts(ctx: QueryContext, start_after: Option<Addr>, limit: Option<u32>) -> Result<_, Cw20Error> {
+    let iter = enumerate!(balances, start_after.., descending);
+    let limit = limit.unwrap_or(100) as usize;
 
-    impl From<TokenInfo> for TokenInfoResponse {
-      fn from(info: TokenInfo) -> Self {
-        Self {
-          name: info.name,
-          symbol: info.symbol,
-          decimals: info.decimals,
-          total_supply: info.total_supply,
-        }
-      }
-    }
+    let mut accounts = iter
+      .take(limit + 1)
+      .map(|res| res.map(|(addr, _)| addr))
+      .collect::<Result<Vec<_>, _>>()?;
 
-    #[query]
-    fn token_info(ctx: QueryContext) -> Result<TokenInfoResponse, ContractError> {
-      Ok(retrieve!(TokenInfo)?.into())
-    }
+    let next = if accounts.len() == limit + 1 {
+      Some(accounts.pop().unwrap())
+    } else {
+      None
+    };
 
-    #[cw_serde]
-    pub struct AllowanceResponse {
-      pub allowance: Uint128,
-      pub expires: Expiry,
-    }
-
-    impl From<Allowance> for AllowanceResponse {
-      fn from(allowance: Allowance) -> Self {
-        Self {
-          allowance: allowance.amount,
-          expires: allowance.expiry.unwrap_or(Expiry::Never),
-        }
-      }
-    }
-
-    #[query]
-    fn allowance(ctx: QueryContext, owner: Addr, spender: Addr) -> Result<AllowanceResponse, ContractError> {
-      Ok(retrieve!(allowances[(owner, spender)])?.into())
-    }
-
-    #[cw_serde]
-    pub struct MinterResponse {
-      pub minter: String,
-      pub cap: Option<Uint128>,
-    }
-
-    #[query]
-    fn minter(ctx: QueryContext) -> Result<MinterResponse, ContractError> {
-      let cap = retrieve!(TokenInfo)?.cap;
-      Ok(MinterResponse {
-        minter: Authority::Minter.get(ctx.deps.storage)?.to_string(),
-        cap,
-      })
-    }
-
-    #[cw_serde]
-    pub struct MarketingInfoResponse {
-      /// A URL pointing to the project behind this token
-      pub project: Option<String>,
-      pub description: Option<String>,
-      pub logo: Option<LogoInfo>,
-      /// Address (if any) who can update this marketing info
-      pub marketing: Option<Addr>,
-    }
-
-    #[query]
-    fn marketing_info(ctx: QueryContext) -> Result<MarketingInfoResponse, ContractError> {
-      let info = retrieve!(MarketingInfo)?;
-      Ok(MarketingInfoResponse {
-        project: info.project,
-        description: info.description,
-        logo: retrieve!(LogoState)?.logo.map(|l| l.into()),
-        marketing: Authority::Marketing.get_maybe(ctx.deps.storage)?,
-      })
-    }
-
-    #[cw_serde]
-    pub struct DownloadLogoResponse {
-      pub mime_type: String,
-      pub data: Binary,
-    }
-
-    #[query]
-    fn download_logo(ctx: QueryContext) -> Result<DownloadLogoResponse, ContractError> {
-      let logo = retrieve!(LogoState)?.logo;
-      match logo {
-        Some(Logo::Url(_)) =>
-          return Err(ContractError::generic("Logo is a URL, cannot download. Query URL with `marketing_info` instead.")),
-        Some(Logo::Embedded(EmbeddedLogo::Svg(data))) => Ok(DownloadLogoResponse {
-          mime_type: "image/svg+xml".to_string(),
-          data,
-        }),
-        Some(Logo::Embedded(EmbeddedLogo::Png(data))) => Ok(DownloadLogoResponse {
-          mime_type: "image/png".to_string(),
-          data,
-        }),
-        None => Err(ContractError::generic("Token has no logo.")),
-      }
-    }
-
-    #[cw_serde]
-    pub struct AllAllowancesResponse {
-      pub allowances: Vec<AllowanceResponse>,
-      pub next: Option<Addr>,
-    }
-
-    #[query]
-    fn all_allowances(ctx: QueryContext, owner: Addr, start_after: Option<Addr>, limit: Option<u32>) -> Result<AllAllowancesResponse, ContractError> {
-      let iter = enumerate!(allowances[owner], start_after.., descending);
-      let limit = limit.unwrap_or(100) as usize;
-
-      let mut allowances = iter
-        .take(limit + 1)
-        .collect::<Result<Vec<_>, _>>()?;
-
-      let next = if allowances.len() == limit + 1 {
-        Some(allowances.pop().unwrap().0)
-      } else {
-        None
-      };
-
-      Ok(AllAllowancesResponse {
-        allowances: allowances.into_iter().map(|(_, allowance)| allowance.into()).collect(),
-        next,
-      })
-    }
-
-    #[cw_serde]
-    pub struct AllAccountsResponse {
-      pub accounts: Vec<Addr>,
-      pub next: Option<Addr>,
-    }
-
-    #[query]
-    fn all_accounts(ctx: QueryContext, start_after: Option<Addr>, limit: Option<u32>) -> Result<AllAccountsResponse, ContractError> {
-      let iter = enumerate!(balances, start_after.., descending);
-      let limit = limit.unwrap_or(100) as usize;
-
-      let mut accounts = iter
-        .take(limit + 1)
-        .map(|res| res.map(|(addr, _)| addr))
-        .collect::<Result<Vec<_>, _>>()?;
-
-      let next = if accounts.len() == limit + 1 {
-        Some(accounts.pop().unwrap())
-      } else {
-        None
-      };
-
-      Ok(AllAccountsResponse {
-        accounts,
-        next,
-      })
-    }
+    Ok(response! {
+      accounts,
+      next,
+    })
   }
 }

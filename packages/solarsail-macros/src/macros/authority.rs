@@ -1,68 +1,32 @@
 use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{Field, Ident};
-use syn::spanned::Spanned;
+use quote::{ToTokens, quote};
+use syn::punctuated::Punctuated;
+use syn::{Block, Ident, parse_quote};
 
-pub struct AuthorityInfo {
-  pub authority_fields_required: Vec<syn::Ident>,
-  pub authority_fields_optional: Vec<syn::Ident>,
-}
+use crate::macros::utils::rename_ident;
 
-/// Extract authority fields from state fields and generate authority-related code
-pub fn extract_authority_fields(fields: &[Field]) -> Result<AuthorityInfo, syn::Error> {
-  let mut authority_fields_required = Vec::new();
-  let mut authority_fields_optional = Vec::new();
-
-  for field in fields {
-    let has_authority_attr = field.attrs.iter().any(|attr| {
-      attr.path().is_ident("authority")
-    });
-
-    if has_authority_attr {
-      let field_name = field.ident.as_ref().ok_or_else(|| {
-        syn::Error::new(field.span(), "Authority field must have a name")
-      })?;
-
-      // Validate that the field type is Addr or Option<Addr>
-      let ty = &field.ty;
-      let ty_name = format!("{}", quote! { #ty }.to_string());
-
-      if ty_name == "Addr" {
-        authority_fields_required.push(field_name.clone());
-      } else if [
-        "Option < Addr >",
-        "Option < cosmwasm_std :: Addr >",
-        "Option < :: cosmwasm_std :: Addr >",
-      ].contains(&ty_name.as_str()) {
-        authority_fields_optional.push(field_name.clone());
-      } else {
-        return Err(syn::Error::new(
-          field.ty.span(),
-          "Authority fields must be of type Addr or Option<Addr>"
-        ));
-      }
+pub fn transform(mut item: syn::ItemFn, authorities: &[&Ident]) -> Result<TokenStream, syn::Error> {
+  let authorities = authorities
+    .iter()
+    .map(|auth| rename_ident!(Case::Pascal, "{}", auth))
+    .collect::<Vec<_>>();
+  let block: Block = parse_quote! {{
+    if ![#(Authority::#authorities.check(&ctx)),*].iter().any(|auth| auth.is_ok()) {
+      return Err(::solarsail::authority::AuthorityError::Unauthorized.into());
     }
-  }
-
-  Ok(AuthorityInfo {
-    authority_fields_required,
-    authority_fields_optional,
-  })
+  }};
+  item.block.stmts.splice(0..0, block.stmts);
+  Ok(item.to_token_stream())
 }
 
 /// Generate the AuthorityTransfer enum and transfer_authority function
-pub fn generate_authority_code(authority_info: &AuthorityInfo) -> TokenStream {
-  let total_fields =
-    authority_info.authority_fields_required.len() + authority_info.authority_fields_optional.len();
-  if total_fields == 0 {
+pub fn generate_authority_code(items: &Punctuated<Ident, syn::Token![,]>) -> TokenStream {
+  if items.len() == 0 {
     return quote! {};
   }
 
-  let fields = authority_info.authority_fields_required
-    .iter()
-    .chain(authority_info.authority_fields_optional.iter())
-    .collect::<Vec<_>>();
+  let fields = items.iter().cloned().collect::<Vec<_>>();
 
   let variants = fields
     .iter()
@@ -74,17 +38,18 @@ pub fn generate_authority_code(authority_info: &AuthorityInfo) -> TokenStream {
 
   quote! {
     struct AuthorityStorage {
-      #(#fields: ::cw_storage_plus::Item<::solarsail::authority::AuthorityState>),*
+      #(#fields: ::solarsail::cw_storage_plus::Item<::solarsail::authority::AuthorityState>),*
     }
 
     impl AuthorityStorage {
       pub fn new() -> Self {
         Self {
-          #(#fields: ::cw_storage_plus::Item::new(stringify!(#fields))),*
+          #(#fields: ::solarsail::cw_storage_plus::Item::new(stringify!(#fields))),*
         }
       }
     }
 
+    #[solarize]
     pub enum Authority {
       #(#variants),*
     }
@@ -105,34 +70,29 @@ pub fn generate_authority_code(authority_info: &AuthorityInfo) -> TokenStream {
       }
     }
 
-    pub enum AuthorityTransfer {
-      #(#variants {
-        addr: Option<::cosmwasm_std::Addr>,
-        expires: ::solarsail::authority::Expiration,
-      }),*
+    #[solarize]
+    pub enum AuthorityOperation {
+      Transfer {
+        authority: Authority,
+        addr: Option<::solarsail::cw_std::Addr>,
+        expires: ::solarsail::cw_utils::Expiration,
+      },
+      Accept {
+        authority: Authority,
+      },
     }
 
-    use ::solarsail::authority::AuthorityTransfer as AuthorityTransferTrait;
-
-    impl AuthorityTransferTrait for AuthorityTransfer {
-      type Authority = Authority;
-
-      fn addr(&self) -> &Option<::cosmwasm_std::Addr> {
+    impl AuthorityOperation {
+      pub fn handle(&self, ctx: &mut ExecuteContext) -> Result<(), ::solarsail::authority::AuthorityError> {
         match self {
-          #(AuthorityTransfer::#variants { addr, .. } => addr),*
+          AuthorityOperation::Transfer { authority, addr, expires } => {
+            authority.transfer(ctx, addr.clone(), expires.clone())?;
+          }
+          AuthorityOperation::Accept { authority } => {
+            authority.accept_transfer(ctx)?;
+          }
         }
-      }
-
-      fn expires(&self) -> &::solarsail::authority::Expiration {
-        match self {
-          #(AuthorityTransfer::#variants { expires, .. } => expires),*
-        }
-      }
-
-      fn authority(&self) -> Authority {
-        match self {
-          #(AuthorityTransfer::#variants { .. } => Authority::#variants),*
-        }
+        Ok(())
       }
     }
   }

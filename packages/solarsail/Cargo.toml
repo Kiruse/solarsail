@@ -1,6 +1,6 @@
 [package]
 name = "solarsail"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["kiruse"]
 edition = "2024"
 
@@ -28,4 +28,4 @@ schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
-solarsail-macros = { version = "0.0.1", path = "../solarsail-macros" }
+solarsail-macros = { version = "0.1.0", path = "../solarsail-macros" }

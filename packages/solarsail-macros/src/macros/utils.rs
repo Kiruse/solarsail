@@ -1,14 +1,15 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{spanned::Spanned, Attribute, FnArg, Ident, ItemFn, Pat, PatType, Path, Type, TypePath};
+use syn::{Attribute, Block, FnArg, Ident, Pat, PatType, Path, Signature, Type, TypePath, parse_quote};
+use syn::spanned::Spanned;
 
 pub enum MsgParams<'a> {
   Fields(Vec<&'a FnArg>),
   Msg(&'a FnArg),
 }
 
-pub fn extract_msg_params<'a>(func: &'a ItemFn) -> Result<MsgParams<'a>, syn::Error> {
-  let mut params = func.sig.inputs
+pub fn extract_msg_params<'a>(sig: &'a Signature) -> Result<MsgParams<'a>, syn::Error> {
+  let mut params = sig.inputs
     .iter()
     // skip self
     .filter(|param| {
@@ -53,12 +54,14 @@ pub fn extract_msg_params<'a>(func: &'a ItemFn) -> Result<MsgParams<'a>, syn::Er
 }
 
 fn is_ctx(param: &FnArg) -> bool {
-  if let FnArg::Typed(PatType { ty, .. }) = param {
-    if let Type::Path(TypePath { path, .. }) = &**ty {
-      return path.segments.iter().any(|s| s.ident == "QueryContext" || s.ident == "ExecuteContext");
+  if let FnArg::Typed(PatType { pat, .. }) = param {
+    match &**pat {
+      Pat::Ident(pat_ident) if pat_ident.ident == "ctx" || pat_ident.ident == "_ctx" => true,
+      _ => false,
     }
+  } else {
+    false
   }
-  false
 }
 
 /// Generate struct fields from function parameters
@@ -68,7 +71,7 @@ pub fn generate_struct_fields(params: &[&FnArg]) -> Vec<TokenStream> {
       FnArg::Receiver(_) => quote! {},
       FnArg::Typed(PatType { pat, ty, .. }) => {
         if let Pat::Ident(pat_ident) = &**pat {
-          let field_name = &pat_ident.ident;
+          let field_name = msg_field_name(&pat_ident.ident);
           let ty_name = format!("{}", quote! { #ty }.to_string());
 
           // Convert Addr to String in message structs
@@ -97,43 +100,50 @@ pub fn generate_struct_fields(params: &[&FnArg]) -> Vec<TokenStream> {
 }
 
 /// Generate parameter extraction statements from args struct
-pub fn generate_msg_extractions(params: &[&FnArg], args: syn::Ident) -> Vec<TokenStream> {
-  params.iter().map(|param| {
-    match param {
-      FnArg::Typed(PatType { pat, ty, .. }) => {
-        if let Pat::Ident(pat_ident) = &**pat {
-          let param_name = &pat_ident.ident;
-          let ty_name = format!("{}", quote! { #ty }.to_string());
+pub fn generate_msg_extractions(params: &[&FnArg], args: Ident) -> Block {
+  let stmts = params
+    .iter()
+    .map(|param| {
+      match param {
+        FnArg::Typed(PatType { pat, ty, .. }) => {
+          if let Pat::Ident(pat_ident) = &**pat {
+            let param_name = &pat_ident.ident;
+            let field_name = msg_field_name(&pat_ident.ident);
+            let ty_name = format!("{}", quote! { #ty }.to_string());
 
-          // Check if the type is Addr or Option<Addr>
-          let opt_addr = [
-            "Option < Addr >",
-            "Option < cosmwasm_std :: Addr >",
-            "Option < :: cosmwasm_std :: Addr >",
-          ].contains(&ty_name.as_str());
-          if ty_name == "Addr" {
-            quote! {
-              let #param_name = ctx.deps.api.addr_validate(&#args.#param_name)?;
-            }
-          } else if opt_addr {
-            quote! {
-              let #param_name = #args.#param_name.as_ref().map(|addr| ctx.deps.api.addr_validate(addr)).transpose()?;
+            // Check if the type is Addr or Option<Addr>
+            let opt_addr = [
+              "Option < Addr >",
+              "Option < cosmwasm_std :: Addr >",
+              "Option < :: cosmwasm_std :: Addr >",
+            ].contains(&ty_name.as_str());
+            if ty_name == "Addr" {
+              quote! {
+                let #param_name = ctx.deps.api.addr_validate(&#args.#field_name)?;
+              }
+            } else if opt_addr {
+              quote! {
+                let #param_name = #args.#field_name.as_ref().map(|addr| ctx.deps.api.addr_validate(addr)).transpose()?;
+              }
+            } else {
+              quote! {
+                let #param_name = #args.#field_name;
+              }
             }
           } else {
-            quote! {
-              let #param_name = #args.#param_name;
-            }
+            quote! {}
           }
-        } else {
-          quote! {}
         }
+        FnArg::Receiver(_) => quote! {},
       }
-      FnArg::Receiver(_) => quote! {},
-    }
-  }).collect()
+    })
+    .collect::<Vec<_>>();
+  parse_quote! {{
+    #(#stmts)*
+  }}
 }
 
-pub fn extract_msg_meta(msg: Ident, arg: &FnArg) -> Result<(Path, TokenStream), syn::Error> {
+pub fn extract_msg_meta(msg: Ident, arg: &FnArg) -> Result<(Path, Block), syn::Error> {
   match arg {
     FnArg::Receiver(_) => return Err(syn::Error::new(arg.span(), "Unexpected receiver parameter")),
     FnArg::Typed(PatType { pat, ty, .. }) if matches!(**pat, Pat::Ident(_)) => {
@@ -143,7 +153,7 @@ pub fn extract_msg_meta(msg: Ident, arg: &FnArg) -> Result<(Path, TokenStream), 
           Type::Path(TypePath { path, .. }) => path.clone(),
           _ => return Err(syn::Error::new(ty.span(), "Unsupported parameter type")),
         };
-        Ok((path, quote! { let #field_name = #msg; }))
+        Ok((path, parse_quote! {{ let #field_name = #msg; }}))
       } else {
         unreachable!()
       }
@@ -152,10 +162,27 @@ pub fn extract_msg_meta(msg: Ident, arg: &FnArg) -> Result<(Path, TokenStream), 
   }
 }
 
+fn msg_field_name(ident: &Ident) -> Ident {
+  if ident.to_string().starts_with('_') {
+    Ident::new(&ident.to_string()[1..], ident.span())
+  } else {
+    ident.clone()
+  }
+}
+
+pub fn make_ident(name: impl AsRef<str>) -> Ident {
+  Ident::new(name.as_ref(), proc_macro2::Span::mixed_site())
+}
+
 pub fn find_attr<'a>(attrs: &'a [Attribute], name: impl AsRef<str>) -> Option<&'a Attribute> {
   attrs.iter().find(|attr| attr.path().is_ident(name.as_ref()))
 }
 
-pub fn has_attr(attrs: &[Attribute], name: impl AsRef<str>) -> bool {
-  find_attr(attrs, name).is_some()
+/// Rename an identifier with a format string & recasing.
+/// The first substitute passed in is considered the base name which should have a `span()` method.
+macro_rules! rename_ident {
+  ($case:expr, $fmt:expr, $name:expr $(, $sub:expr),*) => {
+    syn::Ident::new(&format!($fmt, $name, $($sub),*).to_case($case), $name.span())
+  };
 }
+pub(crate) use rename_ident;

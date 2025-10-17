@@ -1,167 +1,277 @@
-use proc_macro2::{Span, TokenStream};
-use syn::{spanned::Spanned, Ident, Item, ItemMod, Macro};
-use quote::{quote, ToTokens};
+use convert_case::{Case, Casing};
+use proc_macro2::{TokenStream};
+use quote::quote;
+use syn::{Ident, Path, parse_quote};
 
-use crate::macros::utils::has_attr;
+use crate::{macros::utils::{make_ident, rename_ident}, parsers::{ContractDef, ErrorDef}};
 
-#[derive(Debug, Default, PartialEq, Eq, Hash)]
-pub enum ContractMode {
-  #[default]
-  Invalid,
-  Full,
+pub fn contract(input: ContractDef) -> Result<TokenStream, syn::Error> {
+  let auth_code = crate::macros::authority::generate_authority_code(&input.authority);
+
+  let struct_name = rename_ident!(Case::Pascal, "{}Contract", &input.name);
+
+  if let Some(extends) = input.extends {
+    return Err(syn::Error::new(extends.span(), "Extending a base contract is not supported yet"));
+  }
+
+  let parents_impl = input.implements.iter().map(|i| ContractParent::Implements(i.clone()));
+  let parents_extends = input.extends.map(|e| ContractParent::Extends(e.clone()));
+  let parents = parents_impl.chain(parents_extends).collect::<Vec<_>>();
+
+  let execute_base = generate_msg_base(MsgKind::Execute, &input.name, &parents);
+  let query_base = generate_msg_base(MsgKind::Query, &input.name, &parents);
+
+  let error_code = generate_error_struct(&input.name, &input.errors);
+  let state_defs = input.state_defs;
+
+  Ok(quote! {
+    use ::solarsail::scaffold::{ExecuteMsg, QueryMsg};
+    pub struct #struct_name;
+
+    #execute_base
+    #query_base
+
+    #error_code
+    #(#state_defs)*
+    #auth_code
+  })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MsgKind {
   Execute,
   Query,
 }
 
-impl From<Ident> for ContractMode {
-  fn from(ident: Ident) -> Self {
+impl TryFrom<Ident> for MsgKind {
+  type Error = syn::Error;
+
+  fn try_from(ident: Ident) -> Result<Self, Self::Error> {
     match ident.to_string().as_str() {
-      "full" => ContractMode::Full,
-      "execute" => ContractMode::Execute,
-      "query" => ContractMode::Query,
-      _ => ContractMode::Invalid,
+      "execute" => Ok(MsgKind::Execute),
+      "query" => Ok(MsgKind::Query),
+      _ => Err(syn::Error::new(ident.span(), "Invalid msg kind")),
     }
   }
 }
 
-impl ContractMode {
-  pub fn allows_execute(&self) -> bool {
-    self == &ContractMode::Full || self == &ContractMode::Execute
-  }
-
-  pub fn allows_query(&self) -> bool {
-    self == &ContractMode::Full || self == &ContractMode::Query
-  }
-}
-
-pub fn contract(mode: ContractMode, input: &ItemMod) -> TokenStream {
-  match contract_impl(mode, input) {
-    Ok(expanded) => expanded,
-    Err(e) => e.to_compile_error().into(),
-  }
-}
-
-fn contract_impl(mode: ContractMode, input: &ItemMod) -> Result<TokenStream, syn::Error> {
-  let span = Span::mixed_site();
-  let mut input = input.clone();
-
-  if input.content.is_none() {
-    return Err(syn::Error::new(
-      input.span(),
-      "Module must contain at least one item"
-    ));
-  }
-
-  let (_, items) = input.content.as_mut().unwrap();
-
-  let authority_code = gen_authority(items)?;
-  let mut has_instantiate = false;
-  let mut has_migrate = false;
-  let mut executors = Vec::new();
-  let mut queriers = Vec::new();
-  let mut errors = Vec::new();
-
-  let mut i = 0usize;
-  while i < items.len() {
-    let sub: Option<TokenStream> = match &items[i] {
-      Item::Fn(func) if func.sig.ident == "instantiate" => {
-        has_instantiate = true;
-        Some(crate::macros::instantiate::transform(span, func)?)
-      }
-      Item::Fn(func) if func.sig.ident == "migrate" => {
-        has_migrate = true;
-        Some(crate::macros::migrate::transform(span, func)?)
-      }
-      Item::Fn(func) if has_attr(&func.attrs, "execute") => {
-        if !mode.allows_execute() {
-          return Err(syn::Error::new(func.span(), "Execute function not allowed in this contract mode"));
-        }
-        executors.push(func.sig.ident.clone());
-        Some(crate::macros::execute::transform(span, func)?)
-      }
-      Item::Fn(func) if has_attr(&func.attrs, "query") => {
-        if !mode.allows_query() {
-          return Err(syn::Error::new(func.span(), "Query function not allowed in this contract mode"));
-        }
-        queriers.push(func.sig.ident.clone());
-        Some(crate::macros::query::transform(span, func)?)
-      }
-      Item::Macro(mac) if mac.mac.path.is_ident("error") => {
-        let err = syn::parse2::<crate::parsers::ErrorDef>(mac.mac.tokens.clone())?;
-        errors.push(err);
-        Some(quote! {})
-      }
-      _ => None,
-    };
-
-    if let Some(ts) = sub {
-      let mut file = syn::parse2::<syn::File>(ts)?;
-      let count = file.items.len();
-      items.splice(i..=i, file.items.drain(..));
-      i += count;
-    } else {
-      i += 1;
+impl ToString for MsgKind {
+  fn to_string(&self) -> String {
+    match self {
+      MsgKind::Execute => "Execute".to_string(),
+      MsgKind::Query => "Query".to_string(),
     }
   }
+}
 
-  // instantiate function assertions
-  if mode == ContractMode::Full && !has_instantiate {
-    return Err(syn::Error::new(span, "Contract is missing an `instantiate` function"));
-  } else if mode != ContractMode::Full && has_instantiate {
-    return Err(syn::Error::new(span, "`instantiate` function must be located in the contract root"));
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ContractParent {
+  Extends(Ident),
+  Implements(Ident),
+}
+
+impl ContractParent {
+  pub fn name(&self) -> &Ident {
+    match self {
+      ContractParent::Extends(ident) => ident,
+      ContractParent::Implements(ident) => ident,
+    }
   }
+}
 
-  // migrate function assertions (optional)
-  if mode != ContractMode::Full && has_migrate {
-    return Err(syn::Error::new(span, "`migrate` function must be located in the contract root"));
-  }
+/// Produces two types:
+///
+/// 1. A `{ContractName}(Execute|Query)Base`` trait that will be implemented by other
+///    `#[solarize(execute|query)] impl` blocks.
+/// 2. A `{ContractName}(Execute|Query)Msg` enum that contains all its parents' messages as variants
+///    as well as its own message variant, combined using `serde`'s flattening feature.
+///
+/// Note that this contract's own internal/public interfaces are not generated here. Rather, they
+/// are generated by the bare `#[solarize(execute|query)] impl` block. Thus, this block must exist
+/// exactly once per contract.
+fn generate_msg_base(kind: MsgKind, contract_name: &Ident, parents: &[ContractParent]) -> TokenStream {
+  let names = ContractNames::new(contract_name.clone(), kind.clone());
 
-  let error_struct = if mode == ContractMode::Full {
-    Some(crate::macros::error::generate_error_struct(&errors))
-  } else if !errors.is_empty() {
-    return Err(syn::Error::new(span, "`error` macro must be located in the contract root"));
-  } else {
-    None
+  let base_trait = names.trait_base();
+  let msg_entry = names.msg_entry();
+  let msg_internal = names.msg_internal();
+  let scaffold_trait = names.scaffold_trait();
+
+  let ctx_ty = names.ctx_ty();
+  let ctx_ty = match kind {
+    MsgKind::Execute => quote! { &mut ::solarsail::scaffold::#ctx_ty },
+    MsgKind::Query => quote! { ::solarsail::scaffold::#ctx_ty },
   };
 
-  let execute_entrypoint = crate::macros::execute::generate_entrypoint(&executors, authority_code.is_some());
-  let query_entrypoint = crate::macros::query::generate_entrypoint(&queriers);
+  let parents_ifaces = parents
+    .iter()
+    .map(|p| match p {
+      ContractParent::Extends(ident) => names.with_contract(ident).trait_internal(),
+      ContractParent::Implements(ident) => names.with_contract(ident).trait_public(),
+    })
+    .collect::<Vec<_>>();
+  let parents_ifaces = if !parents.is_empty() {
+    quote! { : #(#parents_ifaces),* }
+  } else {
+    quote! {}
+  };
 
-  items.extend(syn::parse2::<syn::File>(quote! {
-    #error_struct
-    #authority_code
-    #execute_entrypoint
-    #query_entrypoint
-  })?.items);
+  let parents_variants = parents
+    .iter()
+    .map(|p| p.name())
+    .collect::<Vec<_>>();
+  let parents_msgs = parents
+    .iter()
+    .map(|p| match p {
+      ContractParent::Extends(ident) => names.with_contract(ident).msg_internal(),
+      ContractParent::Implements(ident) => names.with_contract(ident).msg_entry(),
+    })
+    .collect::<Vec<_>>();
 
-  Ok(input.to_token_stream())
-}
-
-/// Handle authority logic for state! macro calls
-fn gen_authority(items: &mut Vec<Item>) -> Result<Option<TokenStream>, syn::Error> {
-  let mut authority_info = None;
-
-  // find `state!` macro & extract authority fields
-  for item in items.iter() {
-    if let Item::Macro(macro_item) = item {
-      let Macro { path, tokens, .. } = &macro_item.mac;
-      if let Some(segment) = path.segments.last() {
-        if segment.ident == "state" {
-          let parsed = syn::parse2::<crate::macros::state::StateMacroInput>(tokens.clone())?;
-          let fields = parsed.fields.named.into_iter().collect::<Vec<_>>();
-          authority_info = Some(crate::macros::authority::extract_authority_fields(&fields)?);
-          break;
+  let handler = match kind {
+    MsgKind::Execute => quote! {
+      fn handle(&self, ctx: #ctx_ty) -> Result<(), Self::Error> {
+        match self {
+          #(Self::#parents_variants(msg) => msg.handle(ctx)),*
+          Self::#contract_name(msg) => msg.handle(ctx),
         }
       }
+    },
+    MsgKind::Query => quote! {
+      fn handle(&self, ctx: #ctx_ty) -> ::solarsail::scaffold::QueryResult<Self::Error> {
+        match self {
+          #(Self::#parents_variants(msg) => Ok(::solarsail::cw_std::to_json_binary(&msg.handle(ctx)?)?)),*
+          Self::#contract_name(msg) => Ok(::solarsail::cw_std::to_json_binary(&msg.handle(ctx)?)?),
+        }
+      }
+    },
+  };
+
+  quote! {
+    /// Generated base trait for this contract. Generally, you will never use this trait directly.
+    /// Rather, you will implement it indirectly through the `solarize::contract!` macro.
+    pub trait #base_trait #parents_ifaces {}
+
+    #[solarize]
+    pub enum #msg_entry {
+      #(#parents_variants(#parents_msgs)),*
+      #contract_name(#msg_internal),
+    }
+
+    #(
+      impl From<#parents_msgs> for #msg_entry {
+        fn from(msg: #parents_msgs) -> Self {
+          Self::#parents_variants(msg)
+        }
+      }
+    )*
+
+    impl From<#msg_internal> for #msg_entry {
+      fn from(msg: #msg_internal) -> Self {
+        Self::#contract_name(msg)
+      }
+    }
+
+    impl #scaffold_trait for #msg_entry {
+      type Error = ContractError;
+      #handler
     }
   }
+}
 
-  if let Some(auth_info) = authority_info {
-    let total_fields = auth_info.authority_fields_required.len() + auth_info.authority_fields_optional.len();
-    if total_fields > 0 {
-      return Ok(Some(crate::macros::authority::generate_authority_code(&auth_info)));
+pub fn generate_error_struct(contract_name: &Ident, errors: &Vec<ErrorDef>) -> TokenStream {
+  let error_name = rename_ident!(Case::Pascal, "{}Error", contract_name);
+  quote! {
+    #[derive(::thiserror::Error, Debug)]
+    pub enum #error_name {
+      #[error("{0}")]
+      Std(#[from] ::solarsail::cw_std::StdError),
+
+      #[error("{0}")]
+      Generic(String),
+
+      #[error("{0}")]
+      Authority(#[from] ::solarsail::authority::AuthorityError),
+
+      #(#errors,)*
     }
+
+    impl #error_name {
+      pub fn generic(msg: impl Into<String>) -> Self {
+        Self::Generic(msg.into())
+      }
+    }
+
+    pub(crate) type ContractError = #error_name;
+  }
+}
+
+pub struct ContractNames(pub Ident, pub MsgKind);
+
+impl ContractNames {
+  pub fn new(contract_name: Ident, kind: MsgKind) -> Self {
+    Self(contract_name, kind)
   }
 
-  Ok(None)
+  /// Construct a new `ContractNames` instance for another contract with the same message kind.
+  pub fn with_contract(&self, contract_name: &Ident) -> Self {
+    Self(contract_name.clone(), self.1.clone())
+  }
+
+  /// Name of this contract.
+  #[allow(unused)]
+  pub fn name(&self) -> &Ident {
+    &self.0
+  }
+
+  /// Full name of this contract, including the "Contract" suffix.
+  pub fn full_name(&self) -> Ident {
+    rename_ident!(Case::Pascal, "{}Contract", self.0)
+  }
+
+  /// Message kind of this instance.
+  pub fn kind(&self) -> &MsgKind {
+    &self.1
+  }
+
+  /// Name of the base marker trait which this contract must implement. It serves as a proxy trait
+  /// to extend all parents' traits. The real contract trait will then extend this base trait.
+  pub fn trait_base(&self) -> Ident {
+    rename_ident!(Case::Pascal, "{}{}Base", self.0, self.1.to_string())
+  }
+
+  /// Name of the public interface trait of this contract. Contracts that conform to this contract's
+  /// interface must implement this trait.
+  pub fn trait_public(&self) -> Ident {
+    rename_ident!(Case::Pascal, "{}{}", self.0, self.1.to_string())
+  }
+
+  /// Name of the internal interface trait of this contract. This contract and its derivatives must
+  /// implement this trait.
+  pub fn trait_internal(&self) -> Ident {
+    rename_ident!(Case::Pascal, "{}{}Internal", self.0, self.1.to_string())
+  }
+
+  /// Name of the message passed to the entrypoint, defined by the public interface of this contract.
+  pub fn msg_entry(&self) -> Ident {
+    rename_ident!(Case::Pascal, "{}{}Msg", self.0, self.1.to_string())
+  }
+
+  /// Name of the execute/query broker message, defined by the internal interface of this contract
+  pub fn msg_internal(&self) -> Ident {
+    rename_ident!(Case::Pascal, "{}{}MsgInternal", self.0, self.1.to_string())
+  }
+
+  /// Name of the context type for this contract & message kind.
+  pub fn ctx_ty(&self) -> Ident {
+    make_ident(&format!("{}Context", self.1.to_string()).to_case(Case::Pascal))
+  }
+
+  /// Name of the scaffold trait for this contract & message kind.
+  pub fn scaffold_trait(&self) -> Path {
+    match self.1 {
+      MsgKind::Execute => parse_quote! { ::solarsail::scaffold::ExecuteMsg },
+      MsgKind::Query => parse_quote! { ::solarsail::scaffold::QueryMsg },
+    }
+  }
 }

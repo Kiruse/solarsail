@@ -1,26 +1,26 @@
-use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Binary, Uint128};
+use solarsail::solarize;
 
-use crate::contract::ContractError;
+use crate::Cw20Error;
 
-#[cw_serde]
+#[solarize]
 pub struct Allowance {
   pub amount: Uint128,
   pub expiry: Option<Expiry>,
 }
 
 impl Allowance {
-  pub fn raise(&self, amount: Uint128) -> Result<Self, ContractError> {
+  pub fn raise(&self, amount: Uint128) -> Result<Self, Cw20Error> {
     Ok(Self {
       amount: self.amount.checked_add(amount)?,
       expiry: self.expiry.clone(),
     })
   }
 
-  pub fn lower(&self, amount: Uint128) -> Result<Self, ContractError> {
+  pub fn lower(&self, amount: Uint128) -> Result<Self, Cw20Error> {
     Ok(Self {
       amount: self.amount.checked_sub(amount)
-        .map_err(|_| ContractError::InsufficientBalance)?,
+        .map_err(|_| Cw20Error::InsufficientBalance)?,
       expiry: self.expiry.clone(),
     })
   }
@@ -33,7 +33,7 @@ impl Allowance {
   }
 }
 
-#[cw_serde]
+#[solarize]
 pub enum Expiry {
   Never,
   AtTimestamp(cosmwasm_std::Uint64),
@@ -50,7 +50,7 @@ impl From<Expiry> for String {
   }
 }
 
-#[cw_serde]
+#[solarize]
 pub enum Logo {
   Url(String),
   Embedded(EmbeddedLogo),
@@ -65,24 +65,24 @@ impl From<Logo> for LogoInfo {
   }
 }
 
-#[cw_serde]
+#[solarize]
 pub enum EmbeddedLogo {
   Svg(Binary),
   Png(Binary),
 }
 
-#[cw_serde]
+#[solarize]
 pub enum LogoInfo {
   Url(String),
   Embedded,
 }
 
-#[cw_serde]
+#[solarize]
 pub enum Cw20ReceiverExecuteMsg {
   Receive(Cw20ReceiveMsg),
 }
 
-#[cw_serde]
+#[solarize]
 pub struct Cw20ReceiveMsg {
   pub sender: Addr,
   pub amount: Uint128,

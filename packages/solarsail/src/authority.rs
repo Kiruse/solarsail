@@ -1,13 +1,13 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, StdError, Storage as StdStorage};
+use cosmwasm_std::{Addr, Event, StdError, Storage as StdStorage};
 pub use cw_utils::Expiration;
-use solarsail_macros::emit;
 use thiserror::Error;
 
 use crate::ExecuteContext;
 
 pub type Storage = cw_storage_plus::Item<AuthorityState>;
 
+// TODO: this should be solarized, but that causes a circular reference in the expanded code
 #[cw_serde]
 pub struct AuthorityState {
   pub addr: Addr,
@@ -70,16 +70,22 @@ pub trait Authority {
         });
         store.save(ctx.deps.storage, &state)?;
 
-        emit!("authority.begin_transfer", {
-          authority: self.name(),
-          address: new_authority,
-          expires: expires.to_string(),
-        });
+        let event = Event::new("authority.begin_transfer")
+          .add_attributes([
+            ("authority", self.name()),
+            ("address", &new_authority.to_string()),
+            ("expires", &expires.to_string()),
+          ]);
+        ctx.emit(event);
         Ok(())
       }
       None => {
         self.storage().remove(ctx.deps.storage);
-        emit!("authority.renounce", { authority: self.name() });
+        let event = Event::new("authority.renounce")
+          .add_attributes([
+            ("authority", self.name()),
+          ]);
+        ctx.emit(event);
         Ok(())
       }
     }
@@ -93,31 +99,41 @@ pub trait Authority {
     state.addr = state.transfer.take().unwrap().addr;
     state.transfer = None;
     store.save(ctx.deps.storage, &state)?;
-    emit!("authority.accept_transfer", { authority: self.name(), address: state.addr });
+    let event = Event::new("authority.accept_transfer")
+      .add_attributes([
+        ("authority", self.name()),
+        ("address", &state.addr.to_string()),
+      ]);
+    ctx.emit(event);
     Ok(())
   }
-}
 
-pub trait AuthorityTransfer {
-  type Authority: Authority;
-
-  /// Get the address to transfer the authority to.
-  fn addr(&self) -> &Option<Addr>;
-
-  /// Get the expiration time of the transfer.
-  fn expires(&self) -> &Expiration;
-
-  /// Get the authority to transfer the authority to.
-  fn authority(&self) -> Self::Authority;
-
-  /// Transfer the authority to the address. Convenience wrapper for [`Authority::transfer`].
-  fn transfer(&self, ctx: &mut ExecuteContext) -> Result<(), AuthorityError> where Self: Sized {
-    self.authority().transfer(ctx, self.addr().clone(), self.expires().clone())
-  }
-
-  /// Accept the transfer of authority. Convenience wrapper for [`Authority::accept_transfer`].
-  fn accept(&self, ctx: &mut ExecuteContext) -> Result<(), AuthorityError> where Self: Sized {
-    self.authority().accept_transfer(ctx)
+  /// Admin override of authority.
+  fn assign(&self, ctx: &mut ExecuteContext, new_authority: Option<Addr>) -> Result<(), AuthorityError> {
+    match new_authority {
+      Some(new_authority) => {
+        let store = self.storage();
+        let mut state = store.load(ctx.deps.storage)?;
+        state.addr = new_authority.clone();
+        store.save(ctx.deps.storage, &state)?;
+        let event = Event::new("authority.override")
+          .add_attributes([
+            ("authority", self.name()),
+            ("address", &new_authority.to_string()),
+          ]);
+        ctx.emit(event);
+        Ok(())
+      }
+      None => {
+        self.storage().remove(ctx.deps.storage);
+        let event = Event::new("authority.renounce")
+          .add_attributes([
+            ("authority", self.name()),
+          ]);
+        ctx.emit(event);
+        Ok(())
+      }
+    }
   }
 }
 

@@ -1549,7 +1549,7 @@ checksum = "56199f7ddabf13fe5074ce809e7d3f42b42ae711800501b5b16ea82ad029c39d"
 
 [[package]]
 name = "solarsail"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cosmwasm-schema 3.0.2",
  "cosmwasm-std 3.0.2",
@@ -1564,7 +1564,7 @@ dependencies = [
 
 [[package]]
 name = "solarsail-cw20"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cosmwasm-schema 3.0.2",
  "cosmwasm-std 3.0.2",
@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "solarsail-cw721"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cosmwasm-schema 3.0.2",
  "cosmwasm-std 3.0.2",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "solarsail-macros"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "convert_case",
  "proc-macro2",
