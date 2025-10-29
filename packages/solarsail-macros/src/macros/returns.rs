@@ -23,7 +23,7 @@ pub fn transform_returns(func: &mut ImplItemFn, msgs: &mut Vec<TokenStream>) -> 
     field.vis = Visibility::Public(Default::default());
   }
   msgs.push(quote! {
-    #[::solarsail::solarize]
+    #[solarsail::solarize]
     pub struct #msg_name #msg_body
   });
 

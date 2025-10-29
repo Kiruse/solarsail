@@ -13,7 +13,7 @@ pub fn transform(mut item: syn::ItemFn, authorities: &[&Ident]) -> Result<TokenS
     .collect::<Vec<_>>();
   let block: Block = parse_quote! {{
     if ![#(Authority::#authorities.check(&ctx)),*].iter().any(|auth| auth.is_ok()) {
-      return Err(::solarsail::authority::AuthorityError::Unauthorized.into());
+      return Err(solarsail::authority::AuthorityError::Unauthorized.into());
     }
   }};
   item.block.stmts.splice(0..0, block.stmts);
@@ -38,13 +38,13 @@ pub fn generate_authority_code(items: &Punctuated<Ident, syn::Token![,]>) -> Tok
 
   quote! {
     struct AuthorityStorage {
-      #(#fields: ::solarsail::cw_storage_plus::Item<::solarsail::authority::AuthorityState>),*
+      #(#fields: solarsail::cw_storage_plus::Item<solarsail::authority::AuthorityState>),*
     }
 
     impl AuthorityStorage {
       pub fn new() -> Self {
         Self {
-          #(#fields: ::solarsail::cw_storage_plus::Item::new(stringify!(#fields))),*
+          #(#fields: solarsail::cw_storage_plus::Item::new(stringify!(#fields))),*
         }
       }
     }
@@ -54,10 +54,10 @@ pub fn generate_authority_code(items: &Punctuated<Ident, syn::Token![,]>) -> Tok
       #(#variants),*
     }
 
-    use ::solarsail::authority::Authority as AuthorityTrait;
+    use solarsail::authority::Authority as AuthorityTrait;
 
     impl AuthorityTrait for Authority {
-      fn storage(&self) -> ::solarsail::authority::Storage {
+      fn storage(&self) -> solarsail::authority::Storage {
         match self {
           #(Authority::#variants => AuthorityStorage::new().#fields),*
         }
@@ -74,8 +74,8 @@ pub fn generate_authority_code(items: &Punctuated<Ident, syn::Token![,]>) -> Tok
     pub enum AuthorityOperation {
       Transfer {
         authority: Authority,
-        addr: Option<::solarsail::cw_std::Addr>,
-        expires: ::solarsail::cw_utils::Expiration,
+        addr: Option<solarsail::cw_std::Addr>,
+        expires: solarsail::cw_utils::Expiration,
       },
       Accept {
         authority: Authority,
@@ -83,7 +83,7 @@ pub fn generate_authority_code(items: &Punctuated<Ident, syn::Token![,]>) -> Tok
     }
 
     impl AuthorityOperation {
-      pub fn handle(&self, ctx: &mut ExecuteContext) -> Result<(), ::solarsail::authority::AuthorityError> {
+      pub fn handle(&self, ctx: &mut ExecuteContext) -> Result<(), solarsail::authority::AuthorityError> {
         match self {
           AuthorityOperation::Transfer { authority, addr, expires } => {
             authority.transfer(ctx, addr.clone(), expires.clone())?;

@@ -1,20 +1,21 @@
-use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Addr, Event, StdError, Storage as StdStorage};
 pub use cw_utils::Expiration;
+use solarsail_macros::solarize;
 use thiserror::Error;
 
 use crate::ExecuteContext;
 
+use crate as solarsail;
+
 pub type Storage = cw_storage_plus::Item<AuthorityState>;
 
-// TODO: this should be solarized, but that causes a circular reference in the expanded code
-#[cw_serde]
+#[solarize]
 pub struct AuthorityState {
   pub addr: Addr,
   pub transfer: Option<AuthorityTransferState>,
 }
 
-#[cw_serde]
+#[solarize]
 pub struct AuthorityTransferState {
   pub addr: Addr,
   pub expires: Expiration,

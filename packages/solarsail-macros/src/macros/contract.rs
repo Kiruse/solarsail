@@ -25,7 +25,7 @@ pub fn contract(input: ContractDef) -> Result<TokenStream, syn::Error> {
   let state_defs = input.state_defs;
 
   Ok(quote! {
-    use ::solarsail::scaffold::{ExecuteMsg, QueryMsg};
+    use solarsail::scaffold::{ExecuteMsg, QueryMsg};
     pub struct #struct_name;
 
     #execute_base
@@ -99,8 +99,8 @@ fn generate_msg_base(kind: MsgKind, contract_name: &Ident, parents: &[ContractPa
 
   let ctx_ty = names.ctx_ty();
   let ctx_ty = match kind {
-    MsgKind::Execute => quote! { &mut ::solarsail::scaffold::#ctx_ty },
-    MsgKind::Query => quote! { ::solarsail::scaffold::#ctx_ty },
+    MsgKind::Execute => quote! { &mut solarsail::scaffold::#ctx_ty },
+    MsgKind::Query => quote! { solarsail::scaffold::#ctx_ty },
   };
 
   let parents_ifaces = parents
@@ -138,10 +138,10 @@ fn generate_msg_base(kind: MsgKind, contract_name: &Ident, parents: &[ContractPa
       }
     },
     MsgKind::Query => quote! {
-      fn handle(&self, ctx: #ctx_ty) -> ::solarsail::scaffold::QueryResult<Self::Error> {
+      fn handle(&self, ctx: #ctx_ty) -> solarsail::scaffold::QueryResult<Self::Error> {
         match self {
-          #(Self::#parents_variants(msg) => Ok(::solarsail::cw_std::to_json_binary(&msg.handle(ctx)?)?)),*
-          Self::#contract_name(msg) => Ok(::solarsail::cw_std::to_json_binary(&msg.handle(ctx)?)?),
+          #(Self::#parents_variants(msg) => Ok(solarsail::cw_std::to_json_binary(&msg.handle(ctx)?)?)),*
+          Self::#contract_name(msg) => Ok(solarsail::cw_std::to_json_binary(&msg.handle(ctx)?)?),
         }
       }
     },
@@ -185,13 +185,13 @@ pub fn generate_error_struct(contract_name: &Ident, errors: &Vec<ErrorDef>) -> T
     #[derive(::thiserror::Error, Debug)]
     pub enum #error_name {
       #[error("{0}")]
-      Std(#[from] ::solarsail::cw_std::StdError),
+      Std(#[from] solarsail::cw_std::StdError),
 
       #[error("{0}")]
       Generic(String),
 
       #[error("{0}")]
-      Authority(#[from] ::solarsail::authority::AuthorityError),
+      Authority(#[from] solarsail::authority::AuthorityError),
 
       #(#errors,)*
     }
@@ -270,8 +270,8 @@ impl ContractNames {
   /// Name of the scaffold trait for this contract & message kind.
   pub fn scaffold_trait(&self) -> Path {
     match self.1 {
-      MsgKind::Execute => parse_quote! { ::solarsail::scaffold::ExecuteMsg },
-      MsgKind::Query => parse_quote! { ::solarsail::scaffold::QueryMsg },
+      MsgKind::Execute => parse_quote! { solarsail::scaffold::ExecuteMsg },
+      MsgKind::Query => parse_quote! { solarsail::scaffold::QueryMsg },
     }
   }
 }

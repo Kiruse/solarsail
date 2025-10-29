@@ -26,7 +26,7 @@ pub fn transform(func: &ItemFn) -> Result<TokenStream, syn::Error> {
       let msg_struct = quote! {
         /// Contract-specific instantiate message. You will most likely not need this unless you're
         /// writing a smart contract with only minor deviation from the original.
-        #[::solarsail::solarize]
+        #[solarsail::solarize]
         pub struct InstantiateMsg {
           #(#struct_fields)*
         }
@@ -43,10 +43,10 @@ pub fn transform(func: &ItemFn) -> Result<TokenStream, syn::Error> {
   let param_extractions = param_extractions.stmts;
 
   let transformed_func = quote! {
-    #[cfg_attr(not(feature = "library"), ::solarsail::cw_std::entry_point)]
+    #[cfg_attr(not(feature = "library"), solarsail::cw_std::entry_point)]
     #(#func_attrs)*
-    #func_vis fn instantiate(mut ctx: ::solarsail::ExecuteContext, #msg: InstantiateMsg) #func_return {
-      ::solarsail::cw2::set_contract_version(ctx.deps.storage, env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))?;
+    #func_vis fn instantiate(mut ctx: solarsail::ExecuteContext, #msg: InstantiateMsg) #func_return {
+      solarsail::cw2::set_contract_version(ctx.deps.storage, env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))?;
 
       #(#param_extractions)*
 
@@ -54,7 +54,7 @@ pub fn transform(func: &ItemFn) -> Result<TokenStream, syn::Error> {
 
       match result {
         Ok(()) => {
-          Ok(::solarsail::cw_std::Response::new().add_submessages(ctx.submsgs).add_events(ctx.events))
+          Ok(solarsail::cw_std::Response::new().add_submessages(ctx.submsgs).add_events(ctx.events))
         }
         Err(e) => Err(e),
       }

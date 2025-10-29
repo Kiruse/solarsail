@@ -108,7 +108,7 @@ fn transform_impl_fn(func: &mut ImplItemFn, msgs: &mut Vec<TokenStream>) -> Resu
       func.block.stmts.splice(0..0, block.stmts);
 
       msgs.push(quote! {
-        #[::solarsail::solarize]
+        #[solarsail::solarize]
         pub struct #msg_struct_name {
           #(#struct_fields)*
         }
@@ -165,7 +165,7 @@ fn transform_ty_attrs(attrs: &mut Vec<Attribute>, is_enum: bool) -> syn::Result<
     });
 
   let mut params: SerdeParams = parse_quote! {
-    crate = "::solarsail::serde"
+    crate = "solarsail::serde"
   };
 
   if is_enum {
@@ -207,13 +207,13 @@ fn transform_ty_attrs(attrs: &mut Vec<Attribute>, is_enum: bool) -> syn::Result<
   // add the necessary attributes for proper de/serialization & schema generation
   attrs.insert(0, parse_quote! {
     #[derive(
-      ::solarsail::serde::Serialize,
-      ::solarsail::serde::Deserialize,
+      solarsail::serde::Serialize,
+      solarsail::serde::Deserialize,
       ::std::clone::Clone,
       ::std::fmt::Debug,
       ::std::cmp::PartialEq,
-      ::solarsail::schemars::JsonSchema,
-      ::solarsail::cosmwasm_schema::cw_schema::Schemaifier,
+      solarsail::schemars::JsonSchema,
+      solarsail::cosmwasm_schema::cw_schema::Schemaifier,
     )]
   });
 
@@ -222,11 +222,11 @@ fn transform_ty_attrs(attrs: &mut Vec<Attribute>, is_enum: bool) -> syn::Result<
   });
 
   attrs.push(parse_quote! {
-    #[schemaifier(crate = "::solarsail::cosmwasm_schema::cw_schema")]
+    #[schemaifier(crate = "solarsail::cosmwasm_schema::cw_schema")]
   });
 
   attrs.push(parse_quote! {
-    #[schemars(crate = "::solarsail::schemars")]
+    #[schemars(crate = "solarsail::schemars")]
   });
 
   Ok(())
@@ -242,29 +242,29 @@ fn generate_entrypoint(names: &ContractNames, fns: &[Ident]) -> TokenStream {
 
   match names.kind() {
     MsgKind::Execute => quote! {
-      #[cfg_attr(not(feature = "library"), ::solarsail::cw_std::entry_point)]
+      #[cfg_attr(not(feature = "library"), solarsail::cw_std::entry_point)]
       pub fn execute(
-        deps: ::solarsail::cw_std::DepsMut,
-        env: ::solarsail::cw_std::Env,
-        info: ::solarsail::cw_std::MessageInfo,
+        deps: solarsail::cw_std::DepsMut,
+        env: solarsail::cw_std::Env,
+        info: solarsail::cw_std::MessageInfo,
         msg: #enum_name,
-      ) -> ::solarsail::scaffold::ExecuteResult<ContractError> {
-        let mut ctx = ::solarsail::ExecuteContext::new(deps, env, info);
+      ) -> solarsail::scaffold::ExecuteResult<ContractError> {
+        let mut ctx = solarsail::ExecuteContext::new(deps, env, info);
         let res = msg.handle(&mut ctx)?;
-        Ok(::solarsail::scaffold::ExecuteResponse::new()
+        Ok(solarsail::scaffold::ExecuteResponse::new()
           .add_submessages(ctx.submsgs)
           .add_events(ctx.events))
       }
     },
     MsgKind::Query => quote! {
-      #[cfg_attr(not(feature = "library"), ::solarsail::cw_std::entry_point)]
+      #[cfg_attr(not(feature = "library"), solarsail::cw_std::entry_point)]
       pub fn query(
-        deps: ::solarsail::cw_std::Deps,
-        env: ::solarsail::cw_std::Env,
+        deps: solarsail::cw_std::Deps,
+        env: solarsail::cw_std::Env,
         msg: #enum_name,
-      ) -> ::solarsail::scaffold::QueryResult<::solarsail::cw_std::StdError> {
-        msg.handle(::solarsail::QueryContext::new(deps, env))
-          .map_err(|e| ::solarsail::cw_std::StdError::msg(e.to_string()))
+      ) -> solarsail::scaffold::QueryResult<solarsail::cw_std::StdError> {
+        msg.handle(solarsail::QueryContext::new(deps, env))
+          .map_err(|e| solarsail::cw_std::StdError::msg(e.to_string()))
       }
     }
   }
@@ -277,8 +277,8 @@ fn generate_impl(names: &ContractNames, fns_pub: &[ImplItemFn], fns_int: &[ImplI
 
   let ctx_ty = names.ctx_ty();
   let ctx_ty = match names.kind() {
-    MsgKind::Execute => quote! { &mut ::solarsail::scaffold::#ctx_ty },
-    MsgKind::Query => quote! { ::solarsail::scaffold::#ctx_ty },
+    MsgKind::Execute => quote! { &mut solarsail::scaffold::#ctx_ty },
+    MsgKind::Query => quote! { solarsail::scaffold::#ctx_ty },
   };
 
   let scaffold_trait = names.scaffold_trait();
@@ -310,9 +310,9 @@ fn generate_impl(names: &ContractNames, fns_pub: &[ImplItemFn], fns_int: &[ImplI
       }
     },
     MsgKind::Query => quote! {
-      fn handle(&self, ctx: #ctx_ty) -> ::solarsail::scaffold::QueryResult<ContractError> {
+      fn handle(&self, ctx: #ctx_ty) -> solarsail::scaffold::QueryResult<ContractError> {
         match self {
-          #(Self::#variants(msg) => Ok(::solarsail::cw_std::to_json_binary(&#contract_name::#fns(ctx, msg.clone())?)?)),*
+          #(Self::#variants(msg) => Ok(solarsail::cw_std::to_json_binary(&#contract_name::#fns(ctx, msg.clone())?)?)),*
         }
       }
     },
@@ -356,7 +356,7 @@ fn generate_impl(names: &ContractNames, fns_pub: &[ImplItemFn], fns_int: &[ImplI
       })*
     }
 
-    #[::solarsail::solarize]
+    #[solarsail::solarize]
     pub enum #enum_name {
       #(#variants(#msgs)),*
     }

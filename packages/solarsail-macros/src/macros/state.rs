@@ -12,8 +12,8 @@ pub fn state_integrated(input: &StateIntegrated) -> TokenStream {
   let ty = &input.ty;
   let fn_name = storage_name(name);
   quote! {
-    pub fn #fn_name() -> ::solarsail::cw_storage_plus::Item<#ty> {
-      ::solarsail::cw_storage_plus::Item::new("state")
+    pub fn #fn_name() -> solarsail::cw_storage_plus::Item<#ty> {
+      solarsail::cw_storage_plus::Item::new("state")
     }
   }
 }
@@ -28,13 +28,13 @@ pub fn state_store(input: &StateStore) -> TokenStream {
   let fn_name = storage_name(&input.name);
 
   quote! {
-    #[::solarsail::solarize]
+    #[solarsail::solarize]
     pub struct #ty_name {
       #(pub #field_names: #field_types),*
     }
 
-    pub fn #fn_name() -> ::solarsail::cw_storage_plus::Item<#ty_name> {
-      ::solarsail::cw_storage_plus::Item::new("state")
+    pub fn #fn_name() -> solarsail::cw_storage_plus::Item<#ty_name> {
+      solarsail::cw_storage_plus::Item::new("state")
     }
   }
 }
@@ -51,8 +51,8 @@ pub fn state_map(input: &StateMap) -> TokenStream {
   // without indexes
   if input.indexes.is_empty() {
     quote! {
-      pub fn #fn_name() -> ::solarsail::cw_storage_plus::Map<#key_type, #value_type> {
-        ::solarsail::cw_storage_plus::Map::new(#key)
+      pub fn #fn_name() -> solarsail::cw_storage_plus::Map<#key_type, #value_type> {
+        solarsail::cw_storage_plus::Map::new(#key)
       }
     }
   }
@@ -64,14 +64,14 @@ pub fn state_map(input: &StateMap) -> TokenStream {
         let idx_key = format!("{}__{}", key, field);
         if unique.is_some() {
           quote! {
-            #field: ::solarsail::cw_storage_plus::UniqueIndex::new(
+            #field: solarsail::cw_storage_plus::UniqueIndex::new(
               |data| data.#field.clone(),
               #idx_key
             )
           }
         } else {
           quote! {
-            #field: ::solarsail::cw_storage_plus::MultiIndex::new(
+            #field: solarsail::cw_storage_plus::MultiIndex::new(
               |_pk, data| data.#field.clone(),
               #key,
               #idx_key
@@ -85,9 +85,9 @@ pub fn state_map(input: &StateMap) -> TokenStream {
       .iter()
       .map(|StateMapIndex { field, ty, unique }| {
         let ty = if unique.is_some() {
-          quote! { ::solarsail::cw_storage_plus::UniqueIndex<'a, #ty, #value_type, ()> }
+          quote! { solarsail::cw_storage_plus::UniqueIndex<'a, #ty, #value_type, ()> }
         } else {
-          quote! { ::solarsail::cw_storage_plus::MultiIndex<'a, #ty, #value_type, #key_type> }
+          quote! { solarsail::cw_storage_plus::MultiIndex<'a, #ty, #value_type, #key_type> }
         };
         (field, ty)
       })
@@ -97,17 +97,17 @@ pub fn state_map(input: &StateMap) -> TokenStream {
     let indexes_fn = rename_ident!(Case::Snake, "{}_indexes", fn_name);
 
     quote! {
-      pub fn #fn_name<'a>() -> ::solarsail::cw_storage_plus::IndexedMap<#key_type, #value_type, #indexes_struct<'a>> {
-        ::solarsail::cw_storage_plus::IndexedMap::new(#key, #indexes_fn())
+      pub fn #fn_name<'a>() -> solarsail::cw_storage_plus::IndexedMap<#key_type, #value_type, #indexes_struct<'a>> {
+        solarsail::cw_storage_plus::IndexedMap::new(#key, #indexes_fn())
       }
 
       pub struct #indexes_struct<'a> {
         #(pub #fields: #field_types),*
       }
 
-      impl<'a> ::solarsail::cw_storage_plus::IndexList<#value_type> for #indexes_struct<'a> {
-        fn get_indexes(&self) -> Box<dyn Iterator<Item = &dyn ::solarsail::cw_storage_plus::Index<#value_type>> + '_> {
-          let v: Vec<&dyn ::solarsail::cw_storage_plus::Index<#value_type>> = vec![
+      impl<'a> solarsail::cw_storage_plus::IndexList<#value_type> for #indexes_struct<'a> {
+        fn get_indexes(&self) -> Box<dyn Iterator<Item = &dyn solarsail::cw_storage_plus::Index<#value_type>> + '_> {
+          let v: Vec<&dyn solarsail::cw_storage_plus::Index<#value_type>> = vec![
             #(&self.#fields),*
           ];
           Box::new(v.into_iter())
@@ -122,7 +122,7 @@ pub fn state_map(input: &StateMap) -> TokenStream {
         fn idx(&self) -> #indexes_struct<'a>;
       }
 
-      impl<'a, K, V> IndexedMapExt<'a, K, V, #indexes_struct<'a>> for ::solarsail::cw_storage_plus::IndexedMap<K, V, #indexes_struct<'a>> {
+      impl<'a, K, V> IndexedMapExt<'a, K, V, #indexes_struct<'a>> for solarsail::cw_storage_plus::IndexedMap<K, V, #indexes_struct<'a>> {
         fn idx(&self) -> #indexes_struct<'a> {
           #indexes_fn()
         }
@@ -175,8 +175,8 @@ pub fn upstate(input: &UpState) -> TokenStream {
         .map(|pair| (&pair.key, &pair.value))
         .unzip();
       quote! {
-        #store_name().update(ctx.deps.storage, #item_name, |old| -> Result<_, ::solarsail::cw_std::StdError> {
-          let mut old = old.ok_or(::solarsail::cw_std::StdError::msg("old state not found"))?;
+        #store_name().update(ctx.deps.storage, #item_name, |old| -> Result<_, solarsail::cw_std::StdError> {
+          let mut old = old.ok_or(solarsail::cw_std::StdError::msg("old state not found"))?;
           #(old.#keys = #values;)*
           Ok(old)
         })
@@ -189,7 +189,7 @@ pub fn upstate(input: &UpState) -> TokenStream {
         .map(|pair| (&pair.key, &pair.value))
         .unzip();
       quote! {
-        #store_name().update(ctx.deps.storage, |mut old| -> Result<_, ::solarsail::cw_std::StdError> {
+        #store_name().update(ctx.deps.storage, |mut old| -> Result<_, solarsail::cw_std::StdError> {
           #(old.#keys = #values;)*
           Ok(old)
         })
@@ -221,19 +221,19 @@ pub fn enumerate(input: &Enumerate) -> TokenStream {
 
   // Order type doesn't implement ToTokens, so we just manually wrap it
   let order = match order {
-    Order::Ascending => quote! { ::solarsail::cw_std::Order::Ascending },
-    Order::Descending => quote! { ::solarsail::cw_std::Order::Descending },
+    Order::Ascending => quote! { solarsail::cw_std::Order::Ascending },
+    Order::Descending => quote! { solarsail::cw_std::Order::Descending },
   };
 
   let min = match &bounds.start {
     None => quote! { None },
-    Some(start) => quote! { #start.map(|v| ::solarsail::cw_storage_plus::Bound::inclusive(v)) },
+    Some(start) => quote! { #start.map(|v| solarsail::cw_storage_plus::Bound::inclusive(v)) },
   };
 
   let max = match &bounds.end {
     None => quote! { None },
-    Some(end) if bounds.closed => quote! { #end.map(|v| ::solarsail::cw_storage_plus::Bound::inclusive(v)) },
-    Some(end) => quote! { #end.map(|v| ::solarsail::cw_storage_plus::Bound::exclusive(v)) },
+    Some(end) if bounds.closed => quote! { #end.map(|v| solarsail::cw_storage_plus::Bound::inclusive(v)) },
+    Some(end) => quote! { #end.map(|v| solarsail::cw_storage_plus::Bound::exclusive(v)) },
   };
 
   quote! {

@@ -658,7 +658,7 @@ impl ToTokens for Invoke {
     let Invoke { recipient, msg, funds } = self;
 
     tokens.extend(quote! {
-      ctx.invoke(::solarsail::cw_std::SubMsg::new(::solarsail::cw_std::WasmMsg::Execute {
+      ctx.invoke(solarsail::cw_std::SubMsg::new(solarsail::cw_std::WasmMsg::Execute {
         contract_addr: #recipient.to_string(),
         msg: #msg,
         funds: #funds,
@@ -705,7 +705,7 @@ impl ToTokens for EmitEvent {
       .collect::<Vec<_>>();
 
     tokens.extend(quote! {
-      ctx.emit(::solarsail::cw_std::Event::new(#name)#(#attrs)*)
+      ctx.emit(solarsail::cw_std::Event::new(#name)#(#attrs)*)
     });
   }
 }
