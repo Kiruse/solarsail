@@ -1,0 +1,6 @@
+{
+  "rust-analyzer.cargo.features": [
+    "cosmwasm_3_0",
+    "standard_token_factory"
+  ]
+}

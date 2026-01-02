@@ -4,6 +4,7 @@ use solarsail_macros::solarize;
 use thiserror::Error;
 
 use crate::ExecuteContext;
+use crate::context::ExecuteContextDetails;
 
 use crate as solarsail;
 
@@ -41,7 +42,7 @@ pub trait Authority {
 
   /// Check if the current sender is the authority.
   fn check(&self, ctx: &ExecuteContext) -> Result<(), AuthorityError> {
-    if self.get(ctx.deps.storage)? == ctx.info.sender {
+    if self.get(ctx.deps().storage)? == ctx.info().sender {
       Ok(())
     } else {
       Err(AuthorityError::Unauthorized)
@@ -50,9 +51,9 @@ pub trait Authority {
 
   /// Check if the current sender is the pending authority.
   fn check_transfer_to(&self, ctx: &ExecuteContext) -> Result<(), AuthorityError> {
-    let state = self.storage().load(ctx.deps.storage)?;
+    let state = self.storage().load(ctx.deps().storage)?;
     state.transfer
-      .map(|transfer| transfer.addr == ctx.info.sender && !transfer.expires.is_expired(&ctx.env.block))
+      .map(|transfer| transfer.addr == ctx.info().sender && !transfer.expires.is_expired(&ctx.env().block))
       .ok_or(AuthorityError::NotFound)?;
     Ok(())
   }
@@ -64,12 +65,12 @@ pub trait Authority {
     match new_authority {
       Some(new_authority) => {
         let store = self.storage();
-        let mut state = store.load(ctx.deps.storage)?;
+        let mut state = store.load(ctx.deps().storage)?;
         state.transfer = Some(AuthorityTransferState {
           addr: new_authority.clone(),
           expires,
         });
-        store.save(ctx.deps.storage, &state)?;
+        store.save(ctx.deps_mut().storage, &state)?;
 
         let event = Event::new("authority.begin_transfer")
           .add_attributes([
@@ -81,7 +82,7 @@ pub trait Authority {
         Ok(())
       }
       None => {
-        self.storage().remove(ctx.deps.storage);
+        self.storage().remove(ctx.deps_mut().storage);
         let event = Event::new("authority.renounce")
           .add_attributes([
             ("authority", self.name()),
@@ -96,10 +97,10 @@ pub trait Authority {
   fn accept_transfer(&self, ctx: &mut ExecuteContext) -> Result<(), AuthorityError> {
     self.check_transfer_to(ctx)?;
     let store = self.storage();
-    let mut state = store.load(ctx.deps.storage)?;
+    let mut state = store.load(ctx.deps_mut().storage)?;
     state.addr = state.transfer.take().unwrap().addr;
     state.transfer = None;
-    store.save(ctx.deps.storage, &state)?;
+    store.save(ctx.deps_mut().storage, &state)?;
     let event = Event::new("authority.accept_transfer")
       .add_attributes([
         ("authority", self.name()),
@@ -114,9 +115,9 @@ pub trait Authority {
     match new_authority {
       Some(new_authority) => {
         let store = self.storage();
-        let mut state = store.load(ctx.deps.storage)?;
+        let mut state = store.load(ctx.deps_mut().storage)?;
         state.addr = new_authority.clone();
-        store.save(ctx.deps.storage, &state)?;
+        store.save(ctx.deps_mut().storage, &state)?;
         let event = Event::new("authority.override")
           .add_attributes([
             ("authority", self.name()),
@@ -126,7 +127,7 @@ pub trait Authority {
         Ok(())
       }
       None => {
-        self.storage().remove(ctx.deps.storage);
+        self.storage().remove(ctx.deps_mut().storage);
         let event = Event::new("authority.renounce")
           .add_attributes([
             ("authority", self.name()),

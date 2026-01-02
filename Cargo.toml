@@ -19,6 +19,7 @@ cw-utils = { version = "3", default-features = false }
 cw2 = { version = "3", default-features = false }
 
 # Common dependencies
+prost = "0.14.1"
 schemars = "0.8"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 thiserror = { version = "1.0" }

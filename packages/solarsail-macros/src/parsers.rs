@@ -658,11 +658,7 @@ impl ToTokens for Invoke {
     let Invoke { recipient, msg, funds } = self;
 
     tokens.extend(quote! {
-      ctx.invoke(solarsail::cw_std::SubMsg::new(solarsail::cw_std::WasmMsg::Execute {
-        contract_addr: #recipient.to_string(),
-        msg: #msg,
-        funds: #funds,
-      }))
+      ctx.invoke(#recipient, #msg, #funds)
     });
   }
 }

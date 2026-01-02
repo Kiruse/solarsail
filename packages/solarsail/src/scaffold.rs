@@ -1,4 +1,3 @@
-use cosmwasm_std::{SubMsg, WasmMsg, to_json_binary};
 use serde::{Deserialize, Serialize};
 
 pub use crate::context::{ExecuteContext, QueryContext};
@@ -36,12 +35,8 @@ pub trait ExecuteMsg: Serialize + Sized {
   fn handle(&self, ctx: &mut ExecuteContext) -> Result<(), Self::Error>;
 
   /// Execute this execute message on the given contract.
-  fn execute(&self, ctx: &mut ExecuteContext, contract_addr: Addr, funds: Funds) -> Result<(), ExecuteError> {
-    ctx.invoke(SubMsg::new(WasmMsg::Execute {
-      contract_addr: contract_addr.to_string(),
-      msg: to_json_binary(self)?,
-      funds,
-    }));
+  fn execute(&self, ctx: &mut ExecuteContext, contract_addr: &Addr, funds: Funds) -> Result<(), ExecuteError> {
+    ctx.invoke(contract_addr, self, funds)?;
     Ok(())
   }
 }
